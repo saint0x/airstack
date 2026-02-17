@@ -79,6 +79,11 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
     let ssh_target = format!("root@{}", ip);
     ssh_cmd.arg(&ssh_target);
 
+    // Allocate a TTY for interactive sessions so tools like sudo and htop work correctly
+    if command.is_empty() {
+        ssh_cmd.arg("-t");
+    }
+
     // Add command if specified
     if !command.is_empty() {
         if output::is_json() {
