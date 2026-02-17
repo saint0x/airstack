@@ -169,7 +169,9 @@ impl MetalProvider for HetznerProvider {
 
         if request.attach_floating_ip {
             debug!("Attaching floating IP to server: {}", converted_server.id);
-            let floating_ip = self.attach_floating_ip(&converted_server.id).await?;
+            let floating_ip = self
+                .attach_floating_ip(&converted_server.id, &request.region)
+                .await?;
             converted_server.public_ip = Some(floating_ip);
         }
 
@@ -296,17 +298,18 @@ impl MetalProvider for HetznerProvider {
         Ok(ssh_key_id)
     }
 
-    async fn attach_floating_ip(&self, server_id: &str) -> Result<String> {
+    async fn attach_floating_ip(&self, server_id: &str, region: &str) -> Result<String> {
         info!(
             "Creating and attaching floating IP to server: {}",
             server_id
         );
 
-        // Step 1: Create the floating IP (Hetzner requires a datacenter or location).
-        // We create it unassigned first, then assign it to the server.
+        // Step 1: Create the floating IP in the server's home location.
+        // The Hetzner API requires `type` and `home_location`; `assignee` is not a
+        // valid creation field and will cause a 422 error.
         let create_payload = serde_json::json!({
             "type": "ipv4",
-            "home_location": "nbg1",
+            "home_location": region,
             "description": format!("floating-ip-{}", server_id)
         });
 

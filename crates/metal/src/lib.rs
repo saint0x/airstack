@@ -40,7 +40,7 @@ pub trait MetalProvider: Send + Sync {
     async fn get_server(&self, id: &str) -> Result<Server>;
     async fn list_servers(&self) -> Result<Vec<Server>>;
     async fn upload_ssh_key(&self, name: &str, public_key_path: &str) -> Result<String>;
-    async fn attach_floating_ip(&self, server_id: &str) -> Result<String>;
+    async fn attach_floating_ip(&self, server_id: &str, region: &str) -> Result<String>;
 }
 
 pub fn get_provider(
