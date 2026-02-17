@@ -26,7 +26,7 @@ const AIRSTACK_BANNER: &str = r#"
                      |_|
 "#;
 
-const TICK_INTERVAL: Duration = Duration::from_millis(500);
+const TICK_INTERVAL: Duration = Duration::from_millis(600);
 
 const VIEWS: &[&str] = &[
     "Dashboard",
@@ -37,6 +37,19 @@ const VIEWS: &[&str] = &[
     "Network",
     "Providers",
     "Settings",
+];
+
+const PALETTE_ACTIONS: &[(&str, &str)] = &[
+    ("Go Dashboard", "view:Dashboard"),
+    ("Go Servers", "view:Servers"),
+    ("Go Services", "view:Services"),
+    ("Go Logs", "view:Logs"),
+    ("Go Scaling", "view:Scaling"),
+    ("Go Network", "view:Network"),
+    ("Go Providers", "view:Providers"),
+    ("Go Settings", "view:Settings"),
+    ("Refresh Data", "refresh"),
+    ("Quit Airstack", "quit"),
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -54,28 +67,49 @@ struct TuiSummary {
     service_count: usize,
     cache_server_count: usize,
     cache_service_count: usize,
+    last_refresh_ok: bool,
+}
+
+#[derive(Debug, Clone)]
+enum TuiMessage {
+    Input(Event),
+    Refreshed(Result<TuiSummary, String>),
+}
+
+impl From<Event> for TuiMessage {
+    fn from(value: Event) -> Self {
+        Self::Input(value)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct AirstackTuiApp {
+    config_path: String,
     selected_view: usize,
     active_pane: Pane,
     ticks: u64,
     summary: TuiSummary,
+    palette_open: bool,
+    palette_query: String,
+    palette_index: usize,
 }
 
 impl AirstackTuiApp {
-    fn new(summary: TuiSummary, preferred_view: Option<String>) -> Self {
+    fn new(config_path: String, summary: TuiSummary, preferred_view: Option<String>) -> Self {
         let selected_view = preferred_view
             .as_deref()
             .and_then(parse_view_index)
             .unwrap_or(0);
 
         Self {
+            config_path,
             selected_view,
             active_pane: Pane::Navigation,
             ticks: 0,
             summary,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_index: 0,
         }
     }
 
@@ -98,29 +132,72 @@ impl AirstackTuiApp {
             self.selected_view - 1
         };
     }
+
+    fn filtered_actions(&self) -> Vec<(&'static str, &'static str)> {
+        if self.palette_query.trim().is_empty() {
+            return PALETTE_ACTIONS.to_vec();
+        }
+
+        let query = self.palette_query.to_ascii_lowercase();
+        PALETTE_ACTIONS
+            .iter()
+            .copied()
+            .filter(|(label, command)| {
+                label.to_ascii_lowercase().contains(&query)
+                    || command.to_ascii_lowercase().contains(&query)
+            })
+            .collect()
+    }
 }
 
 impl Model for AirstackTuiApp {
-    type Message = Event;
+    type Message = TuiMessage;
 
     fn init(&mut self) -> Cmd<Self::Message> {
-        Cmd::tick(TICK_INTERVAL)
+        Cmd::batch(vec![
+            Cmd::tick(TICK_INTERVAL),
+            refresh_cmd(self.config_path.clone()),
+        ])
     }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         match msg {
-            Event::Tick => {
+            TuiMessage::Input(Event::Tick) => {
                 self.ticks = self.ticks.wrapping_add(1);
-                Cmd::tick(TICK_INTERVAL)
+                Cmd::batch(vec![
+                    Cmd::tick(TICK_INTERVAL),
+                    refresh_cmd(self.config_path.clone()),
+                ])
             }
-            Event::Key(key) => {
+            TuiMessage::Refreshed(result) => {
+                match result {
+                    Ok(summary) => {
+                        self.summary = summary;
+                    }
+                    Err(_) => {
+                        self.summary.last_refresh_ok = false;
+                    }
+                }
+                Cmd::none()
+            }
+            TuiMessage::Input(Event::Key(key)) => {
                 if key.modifiers.contains(Modifiers::CTRL) && key.is_char('c') {
                     return Cmd::quit();
+                }
+
+                if self.palette_open {
+                    return handle_palette_input(self, key);
                 }
 
                 match key.code {
                     KeyCode::Escape => Cmd::quit(),
                     KeyCode::Char('q') => Cmd::quit(),
+                    KeyCode::Char(':') => {
+                        self.palette_open = true;
+                        self.palette_query.clear();
+                        self.palette_index = 0;
+                        Cmd::none()
+                    }
                     KeyCode::Tab => {
                         self.next_pane();
                         Cmd::none()
@@ -181,18 +258,23 @@ impl Model for AirstackTuiApp {
             self.selected_view,
             self.ticks,
             self.active_pane,
+            self.summary.last_refresh_ok,
             frame,
         );
         render_navigation(cols[0], self.selected_view, self.active_pane, frame);
         render_workspace(
             cols[1],
             self.selected_view,
-            self.summary.clone(),
+            &self.summary,
             self.active_pane,
             frame,
         );
-        render_telemetry(cols[2], self.summary.clone(), self.active_pane, frame);
-        render_footer(footer, frame);
+        render_telemetry(cols[2], &self.summary, self.active_pane, frame);
+        render_footer(footer, self.palette_open, frame);
+
+        if self.palette_open {
+            render_palette(root, self, frame);
+        }
     }
 }
 
@@ -201,29 +283,38 @@ pub async fn run(config_path: &str, view: Option<String>) -> Result<()> {
         anyhow::bail!("`airstack tui` is interactive and does not support --json.");
     }
 
-    let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
-    let state = LocalState::load(&config.project.name)?;
-
-    let summary = TuiSummary {
-        project_name: config.project.name.clone(),
-        project_description: config.project.description.clone(),
-        server_count: config.infra.as_ref().map(|i| i.servers.len()).unwrap_or(0),
-        service_count: config.services.as_ref().map(|s| s.len()).unwrap_or(0),
-        cache_server_count: state.servers.len(),
-        cache_service_count: state.services.len(),
-    };
+    let summary = load_summary(config_path).context("Failed to load initial TUI summary")?;
 
     if !output::is_quiet() {
         output::line(AIRSTACK_BANNER);
         output::line("Launching embedded Airstack TUI...");
     }
 
-    let model = AirstackTuiApp::new(summary, view);
+    let model = AirstackTuiApp::new(config_path.to_string(), summary, view);
     let config = ProgramConfig::fullscreen().with_mouse();
     let mut program = Program::with_config(model, config)
         .context("Failed to initialize embedded FrankenTUI runtime")?;
     program.run().context("Airstack TUI runtime failed")?;
     Ok(())
+}
+
+fn refresh_cmd(config_path: String) -> Cmd<TuiMessage> {
+    Cmd::task(move || TuiMessage::Refreshed(load_summary(&config_path).map_err(|e| e.to_string())))
+}
+
+fn load_summary(config_path: &str) -> Result<TuiSummary> {
+    let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let state = LocalState::load(&config.project.name)?;
+
+    Ok(TuiSummary {
+        project_name: config.project.name,
+        project_description: config.project.description,
+        server_count: config.infra.as_ref().map(|i| i.servers.len()).unwrap_or(0),
+        service_count: config.services.as_ref().map(|s| s.len()).unwrap_or(0),
+        cache_server_count: state.servers.len(),
+        cache_service_count: state.services.len(),
+        last_refresh_ok: true,
+    })
 }
 
 fn parse_view_index(view: &str) -> Option<usize> {
@@ -233,11 +324,78 @@ fn parse_view_index(view: &str) -> Option<usize> {
         .position(|candidate| candidate.to_ascii_lowercase() == normalized)
 }
 
+fn handle_palette_input(
+    app: &mut AirstackTuiApp,
+    key: ftui::core::event::KeyEvent,
+) -> Cmd<TuiMessage> {
+    match key.code {
+        KeyCode::Escape => {
+            app.palette_open = false;
+            app.palette_query.clear();
+            app.palette_index = 0;
+            Cmd::none()
+        }
+        KeyCode::Backspace => {
+            app.palette_query.pop();
+            app.palette_index = 0;
+            Cmd::none()
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let actions = app.filtered_actions();
+            if !actions.is_empty() {
+                app.palette_index = (app.palette_index + 1) % actions.len();
+            }
+            Cmd::none()
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let actions = app.filtered_actions();
+            if !actions.is_empty() {
+                app.palette_index = if app.palette_index == 0 {
+                    actions.len() - 1
+                } else {
+                    app.palette_index - 1
+                };
+            }
+            Cmd::none()
+        }
+        KeyCode::Enter => {
+            let actions = app.filtered_actions();
+            if actions.is_empty() {
+                return Cmd::none();
+            }
+            let (_, command) = actions[app.palette_index.min(actions.len() - 1)];
+            app.palette_open = false;
+            app.palette_query.clear();
+            app.palette_index = 0;
+
+            if command == "quit" {
+                return Cmd::quit();
+            }
+            if command == "refresh" {
+                return refresh_cmd(app.config_path.clone());
+            }
+            if let Some(view_name) = command.strip_prefix("view:") {
+                if let Some(idx) = parse_view_index(view_name) {
+                    app.selected_view = idx;
+                }
+            }
+            Cmd::none()
+        }
+        KeyCode::Char(c) if !c.is_control() => {
+            app.palette_query.push(c);
+            app.palette_index = 0;
+            Cmd::none()
+        }
+        _ => Cmd::none(),
+    }
+}
+
 fn render_header(
     area: Rect,
     selected_view: usize,
     ticks: u64,
     active_pane: Pane,
+    refresh_ok: bool,
     frame: &mut Frame,
 ) {
     let pane = match active_pane {
@@ -245,20 +403,23 @@ fn render_header(
         Pane::Workspace => "Workspace",
         Pane::Telemetry => "Telemetry",
     };
+    let health = if refresh_ok { "SYNCED" } else { "STALE" };
     let title = format!("Airstack // {} // Focus: {}", VIEWS[selected_view], pane);
-    Paragraph::new(format!("{title}\nTick: {ticks} | Press q/Esc to quit"))
-        .style(
-            Style::new()
-                .fg(PackedRgba::rgb(225, 245, 235))
-                .bg(PackedRgba::rgb(20, 26, 28))
-                .bold(),
-        )
-        .block(
-            Block::bordered()
-                .title("Airstack Runtime")
-                .border_type(BorderType::Double),
-        )
-        .render(area, frame);
+    Paragraph::new(format!(
+        "{title}\nTick: {ticks} | Sync: {health} | Press q/Esc to quit"
+    ))
+    .style(
+        Style::new()
+            .fg(PackedRgba::rgb(225, 245, 235))
+            .bg(PackedRgba::rgb(20, 26, 28))
+            .bold(),
+    )
+    .block(
+        Block::bordered()
+            .title("Airstack Runtime")
+            .border_type(BorderType::Double),
+    )
+    .render(area, frame);
 }
 
 fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame: &mut Frame) {
@@ -270,7 +431,7 @@ fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame:
             lines.push_str(&format!("  {:>2}. {}\n", idx + 1, view));
         }
     }
-    lines.push_str("\nKeys: j/k, arrows, tab");
+    lines.push_str("\nKeys: j/k, arrows, tab\nPalette: :");
 
     let border_style = if matches!(active_pane, Pane::Navigation) {
         Style::new().fg(PackedRgba::rgb(102, 226, 156)).bold()
@@ -292,16 +453,17 @@ fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame:
 fn render_workspace(
     area: Rect,
     selected_view: usize,
-    summary: TuiSummary,
+    summary: &TuiSummary,
     active_pane: Pane,
     frame: &mut Frame,
 ) {
     let description = summary
         .project_description
+        .clone()
         .unwrap_or_else(|| "No description configured.".to_string());
 
     let content = format!(
-        "{}\n\nProject: {}\nDescription: {}\n\nInfra servers: {}\nServices: {}\n\nState cache servers: {}\nState cache services: {}\n\nProduction notes:\n- Dependency-aware lifecycle is active\n- JSON output mode is available in CLI\n- Drift signals are surfaced in status",
+        "{}\n\nProject: {}\nDescription: {}\n\nInfra servers: {}\nServices: {}\n\nState cache servers: {}\nState cache services: {}\n\nProduction notes:\n- Dependency-aware lifecycle is active\n- JSON output mode is available in CLI\n- Drift signals are surfaced in status\n- Live summary refresh runs on ticks",
         workspace_heading(selected_view),
         summary.project_name,
         description,
@@ -328,9 +490,14 @@ fn render_workspace(
         .render(area, frame);
 }
 
-fn render_telemetry(area: Rect, summary: TuiSummary, active_pane: Pane, frame: &mut Frame) {
+fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: &mut Frame) {
     let content = format!(
-        "Health: DEGRADED\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nQuick actions:\n- up\n- deploy all\n- scale <svc> <n>\n- status --detailed",
+        "Health: {}\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nQuick actions:\n- up\n- deploy all\n- scale <svc> <n>\n- status --detailed\n- : -> command palette",
+        if summary.last_refresh_ok {
+            "SYNCED"
+        } else {
+            "STALE"
+        },
         summary.server_count,
         summary.cache_server_count,
         summary.service_count,
@@ -354,8 +521,13 @@ fn render_telemetry(area: Rect, summary: TuiSummary, active_pane: Pane, frame: &
         .render(area, frame);
 }
 
-fn render_footer(area: Rect, frame: &mut Frame) {
-    Paragraph::new("Tab: switch pane | j/k or arrows: switch view | 1..8: jump view | q/Esc: quit")
+fn render_footer(area: Rect, palette_open: bool, frame: &mut Frame) {
+    let message = if palette_open {
+        "Palette open: type to filter, Enter to run, Esc to close"
+    } else {
+        "Tab: switch pane | j/k: switch view | 1..8: jump view | : command palette | q: quit"
+    };
+    Paragraph::new(message)
         .style(
             Style::new()
                 .fg(PackedRgba::rgb(197, 210, 206))
@@ -367,6 +539,59 @@ fn render_footer(area: Rect, frame: &mut Frame) {
                 .border_type(BorderType::Rounded),
         )
         .render(area, frame);
+}
+
+fn render_palette(root: Rect, app: &AirstackTuiApp, frame: &mut Frame) {
+    let popup = centered_rect(root, 65, 42);
+    let actions = app.filtered_actions();
+
+    let mut lines = String::new();
+    lines.push_str(&format!("Query: {}\n\n", app.palette_query));
+    if actions.is_empty() {
+        lines.push_str("No matching actions.");
+    } else {
+        for (idx, (label, command)) in actions.iter().enumerate() {
+            if idx == app.palette_index {
+                lines.push_str(&format!("> {} ({})\n", label, command));
+            } else {
+                lines.push_str(&format!("  {} ({})\n", label, command));
+            }
+        }
+    }
+
+    let overlay_title = "Command Palette";
+    Paragraph::new(lines)
+        .style(
+            Style::new()
+                .fg(PackedRgba::rgb(240, 240, 230))
+                .bg(PackedRgba::rgb(30, 32, 36)),
+        )
+        .block(
+            Block::bordered()
+                .title(overlay_title)
+                .border_type(BorderType::Double)
+                .border_style(Style::new().fg(PackedRgba::rgb(180, 220, 255)).bold()),
+        )
+        .render(popup, frame);
+}
+
+fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
+    let vertical = Flex::vertical()
+        .constraints([
+            Constraint::Percentage(((100 - height_percent) / 2) as f32),
+            Constraint::Percentage(height_percent as f32),
+            Constraint::Percentage(((100 - height_percent) / 2) as f32),
+        ])
+        .split(area);
+    let middle = vertical[1];
+    let horizontal = Flex::horizontal()
+        .constraints([
+            Constraint::Percentage(((100 - width_percent) / 2) as f32),
+            Constraint::Percentage(width_percent as f32),
+            Constraint::Percentage(((100 - width_percent) / 2) as f32),
+        ])
+        .split(middle);
+    horizontal[1]
 }
 
 fn workspace_heading(selected_view: usize) -> &'static str {

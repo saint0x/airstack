@@ -113,6 +113,12 @@ airstack tui --view services
 airstack tui --view logs
 ```
 
+TUI shortcuts:
+- `:` open command palette
+- `Tab` cycle focus panes
+- `j/k` or arrow keys switch views
+- `q` or `Esc` quit
+
 ## Configuration
 
 ### Infrastructure Providers

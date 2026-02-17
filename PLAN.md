@@ -81,7 +81,7 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 - 🟢 Logs view
 - 🟢 Scaling panel
 - ⬜ SSH terminal panel
-- ⬜ Command palette
+- 🟢 Command palette
 
 11) CLI Layer
 - ✅ Clap command definitions
@@ -154,7 +154,7 @@ Implementation phases
 - Phase 1: integration shell (`airstack tui`, submodule wiring, launch flow) ✅
 - Phase 2: reusable app shell (layout regions, nav model, status rail) ✅
 - Phase 3: core views (dashboard, servers, services, logs, scale, ssh)
-- Phase 4: command palette, hotkeys, and inline action workflows
+- Phase 4: command palette, hotkeys, and inline action workflows 🟢
 - Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests)
 
 ⸻
