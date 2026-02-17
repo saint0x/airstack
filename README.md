@@ -109,7 +109,8 @@ Optional view targeting:
 
 ```bash
 airstack tui --view dashboard
-airstack tui --view visual_effects
+airstack tui --view services
+airstack tui --view logs
 ```
 
 ## Configuration

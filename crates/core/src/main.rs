@@ -84,7 +84,7 @@ enum Commands {
     Tui {
         #[arg(
             long,
-            help = "FrankenTUI showcase view (dashboard, visual_effects, etc.)"
+            help = "Start in a specific Airstack view (Dashboard, Servers, Services, etc.)"
         )]
         view: Option<String>,
     },
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
         Commands::Scale { service, replicas } => {
             commands::scale::run(&cli.config, &service, replicas).await
         }
-        Commands::Tui { view } => commands::tui::run(view).await,
+        Commands::Tui { view } => commands::tui::run(&cli.config, view).await,
         Commands::Status { detailed } => commands::status::run(&cli.config, detailed).await,
         Commands::Ssh { target, command } => {
             commands::ssh::run(&cli.config, &target, command).await

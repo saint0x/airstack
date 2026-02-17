@@ -25,3 +25,4 @@ dirs.workspace = true
 airstack-config = { path = "../config" }
 airstack-metal = { path = "../metal" }
 airstack-container = { path = "../container" }
+ftui = { path = "../../frankentui/crates/ftui" }

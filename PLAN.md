@@ -75,11 +75,11 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 
 10) TUI System
 - 🟢 Global layout engine (FrankenTUI integration bootstrapped)
-- ⬜ Dashboard view
-- ⬜ Server list view
-- ⬜ Service grid view
-- ⬜ Logs view
-- ⬜ Scaling panel
+- 🟢 Dashboard view
+- 🟢 Server list view
+- 🟢 Service grid view
+- 🟢 Logs view
+- 🟢 Scaling panel
 - ⬜ SSH terminal panel
 - ⬜ Command palette
 
@@ -152,7 +152,7 @@ Performance and reliability requirements
 
 Implementation phases
 - Phase 1: integration shell (`airstack tui`, submodule wiring, launch flow) ✅
-- Phase 2: reusable app shell (layout regions, nav model, status rail)
+- Phase 2: reusable app shell (layout regions, nav model, status rail) ✅
 - Phase 3: core views (dashboard, servers, services, logs, scale, ssh)
 - Phase 4: command palette, hotkeys, and inline action workflows
 - Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests)
