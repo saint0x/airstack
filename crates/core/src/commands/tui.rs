@@ -1,16 +1,16 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use tokio::process::Command;
 
 use crate::output;
 
 const AIRSTACK_BANNER: &str = r#"
-     _    _         _             _    
+     _    _         _             _
     / \  (_)_ __ __| |_ __   ___ | | __
    / _ \ | | '__/ _` | '_ \ / _ \| |/ /
-  / ___ \| | | | (_| | |_) | (_) |   < 
+  / ___ \| | | | (_| | |_) | (_) |   <
  /_/   \_\_|_|  \__,_| .__/ \___/|_|\_\
-                     |_|                
+                     |_|
 "#;
 
 pub async fn run(view: Option<String>) -> Result<()> {
@@ -42,6 +42,7 @@ pub async fn run(view: Option<String>) -> Result<()> {
 
     let status = cmd
         .status()
+        .await
         .context("Failed to launch FrankenTUI showcase runner")?;
 
     if !status.success() {
