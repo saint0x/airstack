@@ -27,7 +27,8 @@ const AIRSTACK_BANNER: &str = r#"
                      |_|
 "#;
 
-const TICK_INTERVAL: Duration = Duration::from_millis(600);
+const ANIMATION_TICK_INTERVAL: Duration = Duration::from_millis(220);
+const REFRESH_EVERY_TICKS: u64 = 3;
 const STONE_BG: PackedRgba = PackedRgba::rgb(31, 36, 40);
 const STONE_PANEL: PackedRgba = PackedRgba::rgb(41, 47, 52);
 const STONE_EDGE: PackedRgba = PackedRgba::rgb(58, 66, 74);
@@ -201,7 +202,7 @@ impl Model for AirstackTuiApp {
 
     fn init(&mut self) -> Cmd<Self::Message> {
         Cmd::batch(vec![
-            Cmd::tick(TICK_INTERVAL),
+            Cmd::tick(ANIMATION_TICK_INTERVAL),
             refresh_cmd(self.config_path.clone()),
         ])
     }
@@ -210,10 +211,11 @@ impl Model for AirstackTuiApp {
         match msg {
             TuiMessage::Input(Event::Tick) => {
                 self.ticks = self.ticks.wrapping_add(1);
-                Cmd::batch(vec![
-                    Cmd::tick(TICK_INTERVAL),
-                    refresh_cmd(self.config_path.clone()),
-                ])
+                let mut cmds = vec![Cmd::tick(ANIMATION_TICK_INTERVAL)];
+                if self.ticks % REFRESH_EVERY_TICKS == 0 {
+                    cmds.push(refresh_cmd(self.config_path.clone()));
+                }
+                Cmd::batch(cmds)
             }
             TuiMessage::Refreshed(result) => {
                 match result {
@@ -567,10 +569,9 @@ fn render_navigation(
     let mut lines = String::new();
     lines.push_str("index  name\n");
     lines.push_str("-----  ----------------\n");
-    let nav_cursor = if ticks % 2 == 0 { ">" } else { ">>" };
     for (idx, view) in VIEWS.iter().enumerate() {
         if idx == selected_view {
-            lines.push_str(&format!("{}{:>3}   {}\n", nav_cursor, idx + 1, view));
+            lines.push_str(&format!(">{:>3}   {}\n", idx + 1, view));
         } else {
             lines.push_str(&format!(" {:>3}   {}\n", idx + 1, view));
         }
@@ -844,9 +845,10 @@ fn render_ssh_view(summary: &TuiSummary) -> String {
 
 fn render_settings_view(summary: &TuiSummary) -> String {
     format!(
-        "runtime settings\n  project:{}\n  refresh_interval:{}ms\n  json_mode:unsupported in tui\n  quiet_banner:{}\n\nnotes\n  - live refresh on periodic tick\n  - cached state drift surfaced in telemetry\n  - command palette supports view jumps and refresh",
+        "runtime settings\n  project:{}\n  animation_tick:{}ms\n  data_refresh:every {} ticks\n  json_mode:unsupported in tui\n  quiet_banner:{}\n\nnotes\n  - live refresh on periodic tick\n  - cached state drift surfaced in telemetry\n  - command palette supports view jumps and refresh",
         summary.project_name,
-        TICK_INTERVAL.as_millis(),
+        ANIMATION_TICK_INTERVAL.as_millis(),
+        REFRESH_EVERY_TICKS,
         if output::is_quiet() { "enabled" } else { "disabled" }
     )
 }
