@@ -111,13 +111,26 @@ Optional view targeting:
 airstack tui --view dashboard
 airstack tui --view services
 airstack tui --view logs
+airstack tui --view ssh
 ```
 
 TUI shortcuts:
 - `:` open command palette
 - `Tab` cycle focus panes
 - `j/k` or arrow keys switch views
+- `1..9` jump directly to a view
 - `q` or `Esc` quit
+
+TUI views:
+- Dashboard
+- Servers
+- Services
+- Logs
+- Scaling
+- Network
+- Providers
+- SSH
+- Settings
 
 ## Configuration
 
@@ -190,7 +203,7 @@ env = { API_URL = "http://api:3000" }
 ### Build from Source
 
 ```bash
-git clone https://github.com/airstack/airstack
+git clone https://github.com/saint0x/airstack
 cd airstack
 make install
 ```

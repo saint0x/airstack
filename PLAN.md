@@ -15,26 +15,26 @@ No overreach. No platform bloat. Just clean infra control.
 
 Implementation Audit (as of February 17, 2026)
 
-Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
+Legend: `✅` done, `🟩` in progress/partial, `⬜` not started.
 
 1) Infrastructure Provisioning
 - ✅ Provider trait abstraction
 - ✅ Hetzner provider crate
-- 🟢 Idempotent provisioning logic
+- 🟩 Idempotent provisioning logic
 - ⬜ Retry + backoff logic
 - ⬜ State reconciliation
 
 2) Service Deployment (Containers)
 - ✅ Container runtime abstraction
 - ✅ Docker runtime implementation
-- 🟢 Service lifecycle manager
-- 🟢 Dependency ordering
+- 🟩 Service lifecycle manager
+- 🟩 Dependency ordering
 - ⬜ Health status tracking
 
 3) Scaling
-- 🟢 Replica tracking
+- 🟩 Replica tracking
 - ✅ Deterministic naming
-- 🟢 Rolling spawn logic
+- 🟩 Rolling spawn logic
 - ✅ Safe scale-down logic
 
 4) Load Balancing
@@ -44,67 +44,67 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 - ⬜ Hot reload support
 
 5) Logs
-- 🟢 Log streaming layer
+- 🟩 Log streaming layer
 - ⬜ Multiplexed log router
 - ⬜ Persistent scrollback buffer
 - ⬜ Structured log mode
 
 6) SSH + Remote Control
-- 🟢 SSH connection manager
-- 🟢 Key resolution logic
-- ⬜ TUI terminal embedding
+- 🟩 SSH connection manager
+- 🟩 Key resolution logic
+- 🟩 TUI terminal embedding
 - ⬜ Session multiplexing
 
 7) Status + Observability
-- 🟢 Status polling layer
+- 🟩 Status polling layer
 - ⬜ Lightweight remote probes
-- 🟢 Health model structs
+- 🟩 Health model structs
 - ⬜ Dashboard renderer
 
 8) Config System
 - ✅ TOML schema
-- 🟢 Validation layer
+- 🟩 Validation layer
 - ⬜ Diff engine (desired vs actual)
 - ⬜ Apply engine
 
 9) Provider System
 - ✅ Provider trait definitions
-- 🟢 Dynamic registration
+- 🟩 Dynamic registration
 - ⬜ Capability flags
 - ⬜ Provider discovery
 
 10) TUI System
-- 🟢 Global layout engine (FrankenTUI integration bootstrapped)
-- 🟢 Dashboard view
-- 🟢 Server list view
-- 🟢 Service grid view
-- 🟢 Logs view
-- 🟢 Scaling panel
-- ⬜ SSH terminal panel
-- 🟢 Command palette
+- 🟩 Global layout engine (FrankenTUI integration bootstrapped)
+- 🟩 Dashboard view
+- 🟩 Server list view
+- 🟩 Service grid view
+- 🟩 Logs view
+- 🟩 Scaling panel
+- 🟩 SSH terminal panel
+- 🟩 Command palette
 
 11) CLI Layer
 - ✅ Clap command definitions
-- 🟢 JSON output flag
-- 🟢 Quiet mode
-- 🟢 Exit code consistency
+- 🟩 JSON output flag
+- 🟩 Quiet mode
+- 🟩 Exit code consistency
 
 12) SDK Layer
-- 🟢 Public Rust API
+- 🟩 Public Rust API
 - ⬜ TS bindings generator
-- 🟢 Typed command responses
+- 🟩 Typed command responses
 - ⬜ Example automation scripts
 
 13) State Management (Local-First)
-- 🟢 State cache layer
-- 🟢 Server inventory cache
-- 🟢 Service registry cache
-- 🟢 Drift detection
+- 🟩 State cache layer
+- 🟩 Server inventory cache
+- 🟩 Service registry cache
+- 🟩 Drift detection
 
 14) Project Lifecycle Commands
-- 🟢 Command routing layer
-- 🟢 Consistent UX semantics
-- 🟢 Progress reporting
+- 🟩 Command routing layer
+- 🟩 Consistent UX semantics
+- 🟩 Progress reporting
 
 15) Error Handling + DX
 - ⬜ Error taxonomy
@@ -113,7 +113,7 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 - ⬜ Retry helpers
 
 16) Packaging + Distribution
-- 🟢 Rust static builds
+- 🟩 Rust static builds
 - ✅ npm wrapper package
 - ⬜ Version sync tooling
 - ⬜ Auto-update check (optional)
@@ -153,8 +153,8 @@ Performance and reliability requirements
 Implementation phases
 - Phase 1: integration shell (`airstack tui`, submodule wiring, launch flow) ✅
 - Phase 2: reusable app shell (layout regions, nav model, status rail) ✅
-- Phase 3: core views (dashboard, servers, services, logs, scale, ssh)
-- Phase 4: command palette, hotkeys, and inline action workflows 🟢
+- Phase 3: core views (dashboard, servers, services, logs, scale, ssh) 🟩
+- Phase 4: command palette, hotkeys, and inline action workflows 🟩
 - Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests)
 
 ⸻
@@ -195,6 +195,7 @@ Core Views
 	•	Scaling
 	•	Network
 	•	Providers
+	•	SSH
 	•	Settings
 
 ⸻

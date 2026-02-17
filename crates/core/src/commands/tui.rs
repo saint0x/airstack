@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use airstack_config::AirstackConfig;
@@ -15,7 +16,7 @@ use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::Widget;
 
 use crate::output;
-use crate::state::LocalState;
+use crate::state::{DriftReport, LocalState};
 
 const AIRSTACK_BANNER: &str = r#"
      _    _         _             _
@@ -36,6 +37,7 @@ const VIEWS: &[&str] = &[
     "Scaling",
     "Network",
     "Providers",
+    "SSH",
     "Settings",
 ];
 
@@ -47,6 +49,7 @@ const PALETTE_ACTIONS: &[(&str, &str)] = &[
     ("Go Scaling", "view:Scaling"),
     ("Go Network", "view:Network"),
     ("Go Providers", "view:Providers"),
+    ("Go SSH", "view:SSH"),
     ("Go Settings", "view:Settings"),
     ("Refresh Data", "refresh"),
     ("Quit Airstack", "quit"),
@@ -60,14 +63,39 @@ enum Pane {
 }
 
 #[derive(Debug, Clone)]
+struct TuiServer {
+    name: String,
+    provider: String,
+    region: String,
+    server_type: String,
+    cached_id: Option<String>,
+    cached_public_ip: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TuiService {
+    name: String,
+    image: String,
+    ports: Vec<u16>,
+    depends_on: Vec<String>,
+    cached_replicas: Option<usize>,
+    cached_containers: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct TuiSummary {
     project_name: String,
     project_description: Option<String>,
+    state_updated_at_unix: u64,
     server_count: usize,
     service_count: usize,
     cache_server_count: usize,
     cache_service_count: usize,
     last_refresh_ok: bool,
+    drift: DriftReport,
+    servers: Vec<TuiServer>,
+    services: Vec<TuiService>,
+    providers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,15 +333,70 @@ fn refresh_cmd(config_path: String) -> Cmd<TuiMessage> {
 fn load_summary(config_path: &str) -> Result<TuiSummary> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let state = LocalState::load(&config.project.name)?;
+    let drift = state.detect_drift(&config);
+
+    let servers = config
+        .infra
+        .as_ref()
+        .map(|infra| {
+            infra
+                .servers
+                .iter()
+                .map(|server| {
+                    let cached = state.servers.get(&server.name);
+                    TuiServer {
+                        name: server.name.clone(),
+                        provider: server.provider.clone(),
+                        region: server.region.clone(),
+                        server_type: server.server_type.clone(),
+                        cached_id: cached.and_then(|s| s.id.clone()),
+                        cached_public_ip: cached.and_then(|s| s.public_ip.clone()),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut services = config
+        .services
+        .as_ref()
+        .map(|svc| {
+            svc.iter()
+                .map(|(name, cfg)| {
+                    let cached = state.services.get(name);
+                    TuiService {
+                        name: name.clone(),
+                        image: cfg.image.clone(),
+                        ports: cfg.ports.clone(),
+                        depends_on: cfg.depends_on.clone().unwrap_or_default(),
+                        cached_replicas: cached.map(|s| s.replicas),
+                        cached_containers: cached.map(|s| s.containers.clone()).unwrap_or_default(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    services.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut providers = BTreeSet::new();
+    for server in &servers {
+        providers.insert(server.provider.clone());
+    }
+    providers.insert("docker".to_string());
 
     Ok(TuiSummary {
         project_name: config.project.name,
         project_description: config.project.description,
-        server_count: config.infra.as_ref().map(|i| i.servers.len()).unwrap_or(0),
-        service_count: config.services.as_ref().map(|s| s.len()).unwrap_or(0),
+        state_updated_at_unix: state.updated_at_unix,
+        server_count: servers.len(),
+        service_count: services.len(),
         cache_server_count: state.servers.len(),
         cache_service_count: state.services.len(),
         last_refresh_ok: true,
+        drift,
+        servers,
+        services,
+        providers: providers.into_iter().collect(),
     })
 }
 
@@ -462,16 +545,18 @@ fn render_workspace(
         .clone()
         .unwrap_or_else(|| "No description configured.".to_string());
 
-    let content = format!(
-        "{}\n\nProject: {}\nDescription: {}\n\nInfra servers: {}\nServices: {}\n\nState cache servers: {}\nState cache services: {}\n\nProduction notes:\n- Dependency-aware lifecycle is active\n- JSON output mode is available in CLI\n- Drift signals are surfaced in status\n- Live summary refresh runs on ticks",
-        workspace_heading(selected_view),
-        summary.project_name,
-        description,
-        summary.server_count,
-        summary.service_count,
-        summary.cache_server_count,
-        summary.cache_service_count
-    );
+    let content = match selected_view {
+        0 => render_dashboard_view(summary, &description),
+        1 => render_servers_view(summary),
+        2 => render_services_view(summary),
+        3 => render_logs_view(summary),
+        4 => render_scaling_view(summary),
+        5 => render_network_view(summary),
+        6 => render_providers_view(summary),
+        7 => render_ssh_view(summary),
+        8 => render_settings_view(summary),
+        _ => "Workspace".to_string(),
+    };
 
     let border_style = if matches!(active_pane, Pane::Workspace) {
         Style::new().fg(PackedRgba::rgb(255, 210, 120)).bold()
@@ -490,9 +575,233 @@ fn render_workspace(
         .render(area, frame);
 }
 
+fn render_dashboard_view(summary: &TuiSummary, description: &str) -> String {
+    format!(
+        "Dashboard: high-level operational summary.\n\nProject: {}\nDescription: {}\n\nDesired servers: {}\nCached servers: {}\nDesired services: {}\nCached services: {}\n\nDrift signals:\n- Missing servers: {}\n- Extra servers: {}\n- Missing services: {}\n- Extra services: {}\n\nState cache updated_at(unix): {}",
+        summary.project_name,
+        description,
+        summary.server_count,
+        summary.cache_server_count,
+        summary.service_count,
+        summary.cache_service_count,
+        summary.drift.missing_servers_in_cache.len(),
+        summary.drift.extra_servers_in_cache.len(),
+        summary.drift.missing_services_in_cache.len(),
+        summary.drift.extra_services_in_cache.len(),
+        summary.state_updated_at_unix,
+    )
+}
+
+fn render_servers_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "Servers: provider inventory and host-level posture.".to_string(),
+        String::new(),
+    ];
+
+    if summary.servers.is_empty() {
+        lines.push("No servers defined in config.".to_string());
+    } else {
+        for server in &summary.servers {
+            let cached = if server.cached_id.is_some() || server.cached_public_ip.is_some() {
+                "cached"
+            } else {
+                "not-cached"
+            };
+            lines.push(format!(
+                "- {} [{}] {} {} ({})",
+                server.name, server.provider, server.region, server.server_type, cached
+            ));
+            if let Some(id) = &server.cached_id {
+                lines.push(format!("    id: {}", id));
+            }
+            if let Some(ip) = &server.cached_public_ip {
+                lines.push(format!("    public_ip: {}", ip));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_services_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "Services: deployment topology and dependencies.".to_string(),
+        String::new(),
+    ];
+
+    if summary.services.is_empty() {
+        lines.push("No services defined in config.".to_string());
+    } else {
+        for service in &summary.services {
+            let deps = if service.depends_on.is_empty() {
+                "none".to_string()
+            } else {
+                service.depends_on.join(",")
+            };
+            let cached_replicas = service
+                .cached_replicas
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "n/a".to_string());
+            lines.push(format!(
+                "- {} -> {} | ports={:?} | deps={} | cached_replicas={}",
+                service.name, service.image, service.ports, deps, cached_replicas
+            ));
+            if !service.cached_containers.is_empty() {
+                lines.push(format!(
+                    "    containers: {}",
+                    service.cached_containers.join(", ")
+                ));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_logs_view(summary: &TuiSummary) -> String {
+    let hot_service = summary
+        .services
+        .first()
+        .map(|s| s.name.as_str())
+        .unwrap_or("<service>");
+
+    format!(
+        "Logs: streaming tail and structured filters.\n\nRecommended commands:\n- airstack logs {hot_service} --follow\n- airstack logs {hot_service} --tail 200\n- airstack --json logs {hot_service} --tail 100\n\nStatus:\n- Refresh: {}\n- Cache services tracked: {}",
+        if summary.last_refresh_ok { "healthy" } else { "stale" },
+        summary.cache_service_count,
+    )
+}
+
+fn render_scaling_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "Scaling: replica controls and convergence feedback.".to_string(),
+        String::new(),
+    ];
+
+    if summary.services.is_empty() {
+        lines.push("No services available for scaling.".to_string());
+        return lines.join("\n");
+    }
+
+    for service in &summary.services {
+        let cached_replicas = service
+            .cached_replicas
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "n/a".to_string());
+        let signal = match service.cached_replicas {
+            Some(1) => "in-sync",
+            Some(_) => "scaled",
+            None => "not-deployed",
+        };
+        lines.push(format!(
+            "- {} | desired=1 | cached={} | {}",
+            service.name, cached_replicas, signal
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Quick command: airstack scale <service> <replicas>".to_string());
+
+    lines.join("\n")
+}
+
+fn render_network_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "Network: ports, routes, and north-south flows.".to_string(),
+        String::new(),
+    ];
+
+    if summary.services.is_empty() {
+        lines.push("No service ports configured.".to_string());
+    } else {
+        for service in &summary.services {
+            if service.ports.is_empty() {
+                lines.push(format!("- {} | no exposed ports", service.name));
+                continue;
+            }
+            let ports = service
+                .ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            lines.push(format!("- {} | ports {}", service.name, ports));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Note: embedded proxy/load-balancer integration is planned.".to_string());
+    lines.join("\n")
+}
+
+fn render_providers_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "Providers: capability matrix and auth state.".to_string(),
+        String::new(),
+    ];
+
+    for provider in &summary.providers {
+        let capability = if provider == "docker" {
+            "container-runtime"
+        } else {
+            "infrastructure"
+        };
+        lines.push(format!("- {} ({})", provider, capability));
+    }
+
+    if summary.providers.is_empty() {
+        lines.push("No providers discovered from config/state.".to_string());
+    }
+
+    lines.push(String::new());
+    lines.push("Note: provider discovery and capability flags remain in roadmap.".to_string());
+    lines.join("\n")
+}
+
+fn render_ssh_view(summary: &TuiSummary) -> String {
+    let mut lines = vec![
+        "SSH: terminal access and remote control.".to_string(),
+        String::new(),
+        "Embedded terminal panel: bootstrapped (command surface present).".to_string(),
+        "Full session multiplexing remains planned for a later phase.".to_string(),
+        String::new(),
+        "Server targets:".to_string(),
+    ];
+
+    if summary.servers.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for server in &summary.servers {
+            lines.push(format!(
+                "- {} ({}/{})",
+                server.name, server.provider, server.region
+            ));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Quick command: airstack ssh <server> [command ...]".to_string());
+    lines.join("\n")
+}
+
+fn render_settings_view(summary: &TuiSummary) -> String {
+    format!(
+        "Settings: config, output mode, and runtime knobs.\n\nProject: {}\nRefresh interval: {}ms\nJSON mode in TUI: unsupported by design\nQuiet mode banner suppression: {}\n\nRuntime notes:\n- Live refresh on periodic tick\n- Cached state drift surfaced in telemetry\n- Command palette supports view jumps and refresh",
+        summary.project_name,
+        TICK_INTERVAL.as_millis(),
+        if output::is_quiet() { "enabled" } else { "disabled" }
+    )
+}
+
 fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: &mut Frame) {
-    let content = format!(
-        "Health: {}\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nQuick actions:\n- up\n- deploy all\n- scale <svc> <n>\n- status --detailed\n- : -> command palette",
+    let drift_lines = [
+        ("Missing srv", &summary.drift.missing_servers_in_cache),
+        ("Extra srv", &summary.drift.extra_servers_in_cache),
+        ("Missing svc", &summary.drift.missing_services_in_cache),
+        ("Extra svc", &summary.drift.extra_services_in_cache),
+    ];
+
+    let mut content = format!(
+        "Health: {}\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nDrift detail:",
         if summary.last_refresh_ok {
             "SYNCED"
         } else {
@@ -503,6 +812,14 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         summary.service_count,
         summary.cache_service_count
     );
+
+    for (label, items) in drift_lines {
+        if items.is_empty() {
+            content.push_str(&format!("\n- {}: none", label));
+        } else {
+            content.push_str(&format!("\n- {}: {}", label, items.join(",")));
+        }
+    }
 
     let border_style = if matches!(active_pane, Pane::Telemetry) {
         Style::new().fg(PackedRgba::rgb(120, 205, 255)).bold()
@@ -525,7 +842,7 @@ fn render_footer(area: Rect, palette_open: bool, frame: &mut Frame) {
     let message = if palette_open {
         "Palette open: type to filter, Enter to run, Esc to close"
     } else {
-        "Tab: switch pane | j/k: switch view | 1..8: jump view | : command palette | q: quit"
+        "Tab: switch pane | j/k: switch view | 1..9: jump view | : command palette | q: quit"
     };
     Paragraph::new(message)
         .style(
@@ -592,18 +909,4 @@ fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
         ])
         .split(middle);
     horizontal[1]
-}
-
-fn workspace_heading(selected_view: usize) -> &'static str {
-    match selected_view {
-        0 => "Dashboard: high-level operational summary.",
-        1 => "Servers: provider inventory and host-level posture.",
-        2 => "Services: deployment topology and dependencies.",
-        3 => "Logs: streaming tail and structured filters.",
-        4 => "Scaling: replica controls and convergence feedback.",
-        5 => "Network: ports, routes, and north-south flows.",
-        6 => "Providers: capability matrix and auth state.",
-        7 => "Settings: config, output mode, and runtime knobs.",
-        _ => "Workspace",
-    }
 }
