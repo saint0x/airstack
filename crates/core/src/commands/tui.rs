@@ -910,3 +910,102 @@ fn centered_rect(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
         .split(middle);
     horizontal[1]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_summary() -> TuiSummary {
+        TuiSummary {
+            project_name: "demo".to_string(),
+            project_description: Some("demo project".to_string()),
+            state_updated_at_unix: 1_700_000_000,
+            server_count: 1,
+            service_count: 2,
+            cache_server_count: 1,
+            cache_service_count: 2,
+            last_refresh_ok: true,
+            drift: DriftReport {
+                missing_servers_in_cache: vec!["srv-missing".to_string()],
+                extra_servers_in_cache: vec![],
+                missing_services_in_cache: vec!["svc-missing".to_string()],
+                extra_services_in_cache: vec!["svc-extra".to_string()],
+            },
+            servers: vec![TuiServer {
+                name: "srv-1".to_string(),
+                provider: "hetzner".to_string(),
+                region: "nbg1".to_string(),
+                server_type: "cx21".to_string(),
+                cached_id: Some("123".to_string()),
+                cached_public_ip: Some("1.2.3.4".to_string()),
+            }],
+            services: vec![
+                TuiService {
+                    name: "api".to_string(),
+                    image: "api:v1".to_string(),
+                    ports: vec![3000],
+                    depends_on: vec!["db".to_string()],
+                    cached_replicas: Some(2),
+                    cached_containers: vec!["api".to_string(), "api-2".to_string()],
+                },
+                TuiService {
+                    name: "db".to_string(),
+                    image: "postgres:15".to_string(),
+                    ports: vec![5432],
+                    depends_on: vec![],
+                    cached_replicas: Some(1),
+                    cached_containers: vec!["db".to_string()],
+                },
+            ],
+            providers: vec!["docker".to_string(), "hetzner".to_string()],
+        }
+    }
+
+    #[test]
+    fn parse_view_index_handles_case_insensitive_names() {
+        assert_eq!(parse_view_index("dashboard"), Some(0));
+        assert_eq!(parse_view_index("SSH"), Some(7));
+        assert_eq!(parse_view_index("settings"), Some(8));
+        assert_eq!(parse_view_index("unknown"), None);
+    }
+
+    #[test]
+    fn filtered_actions_matches_label_and_command() {
+        let mut app = AirstackTuiApp::new("airstack.toml".to_string(), sample_summary(), None);
+        app.palette_query = "ssh".to_string();
+        let ssh_actions = app.filtered_actions();
+        assert!(ssh_actions.iter().any(|(label, _)| *label == "Go SSH"));
+
+        app.palette_query = "refresh".to_string();
+        let refresh_actions = app.filtered_actions();
+        assert!(refresh_actions
+            .iter()
+            .any(|(_, command)| *command == "refresh"));
+    }
+
+    #[test]
+    fn dashboard_view_includes_drift_counts() {
+        let summary = sample_summary();
+        let rendered = render_dashboard_view(&summary, "demo project");
+        assert!(rendered.contains("Missing servers: 1"));
+        assert!(rendered.contains("Missing services: 1"));
+        assert!(rendered.contains("Extra services: 1"));
+    }
+
+    #[test]
+    fn services_view_includes_dependency_and_replicas() {
+        let summary = sample_summary();
+        let rendered = render_services_view(&summary);
+        assert!(rendered.contains("api -> api:v1"));
+        assert!(rendered.contains("deps=db"));
+        assert!(rendered.contains("cached_replicas=2"));
+    }
+
+    #[test]
+    fn ssh_view_includes_servers_and_command_hint() {
+        let summary = sample_summary();
+        let rendered = render_ssh_view(&summary);
+        assert!(rendered.contains("srv-1 (hetzner/nbg1)"));
+        assert!(rendered.contains("airstack ssh <server> [command ...]"));
+    }
+}

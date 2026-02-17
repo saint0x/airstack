@@ -155,7 +155,7 @@ Implementation phases
 - Phase 2: reusable app shell (layout regions, nav model, status rail) ✅
 - Phase 3: core views (dashboard, servers, services, logs, scale, ssh) 🟩
 - Phase 4: command palette, hotkeys, and inline action workflows 🟩
-- Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests)
+- Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests) 🟩
 
 ⸻
 
