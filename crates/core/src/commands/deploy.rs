@@ -1,10 +1,12 @@
 use crate::dependencies::deployment_order;
 use crate::output;
+use crate::retry::retry_with_backoff;
 use crate::state::{LocalState, ServiceState};
 use airstack_config::AirstackConfig;
 use airstack_container::{get_provider as get_container_provider, RunServiceRequest};
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::time::Duration;
 use tracing::info;
 
 #[derive(Debug, Serialize)]
@@ -64,10 +66,14 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
             restart_policy: Some("unless-stopped".to_string()),
         };
 
-        let container = container_provider
-            .run_service(request)
-            .await
-            .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
+        let container = retry_with_backoff(
+            3,
+            Duration::from_millis(250),
+            &format!("deploy service '{}'", deploy_name),
+            |_| container_provider.run_service(request.clone()),
+        )
+        .await
+        .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
 
         let ports = container
             .ports

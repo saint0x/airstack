@@ -6,6 +6,7 @@ use tracing_subscriber::FmtSubscriber;
 mod commands;
 mod dependencies;
 mod output;
+mod retry;
 mod state;
 
 #[derive(Parser)]

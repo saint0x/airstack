@@ -21,7 +21,7 @@ Legend: `✅` done, `🟩` in progress/partial, `⬜` not started.
 - ✅ Provider trait abstraction
 - ✅ Hetzner provider crate
 - 🟩 Idempotent provisioning logic
-- ⬜ Retry + backoff logic
+- 🟩 Retry + backoff logic
 - ⬜ State reconciliation
 
 2) Service Deployment (Containers)
@@ -110,7 +110,7 @@ Legend: `✅` done, `🟩` in progress/partial, `⬜` not started.
 - ⬜ Error taxonomy
 - ⬜ Pretty error renderer
 - ✅ Verbose mode
-- ⬜ Retry helpers
+- 🟩 Retry helpers
 
 16) Packaging + Distribution
 - 🟩 Rust static builds

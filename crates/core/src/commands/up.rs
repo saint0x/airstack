@@ -4,10 +4,12 @@ use airstack_metal::{get_provider as get_metal_provider, CreateServerRequest};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::dependencies::deployment_order;
 use crate::output;
+use crate::retry::retry_with_backoff;
 use crate::state::{LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
@@ -118,7 +120,14 @@ pub async fn run(
                 attach_floating_ip: server.floating_ip.unwrap_or(false),
             };
 
-            match metal_provider.create_server(request).await {
+            match retry_with_backoff(
+                3,
+                Duration::from_millis(300),
+                &format!("create server '{}'", server.name),
+                |_| metal_provider.create_server(request.clone()),
+            )
+            .await
+            {
                 Ok(created_server) => {
                     let created_id = created_server.id.clone();
                     let created_ip = created_server.public_ip.clone();
@@ -185,10 +194,14 @@ pub async fn run(
                 restart_policy: Some("unless-stopped".to_string()),
             };
 
-            let container = container_provider
-                .run_service(request)
-                .await
-                .with_context(|| format!("Failed to deploy service {}", service_name))?;
+            let container = retry_with_backoff(
+                3,
+                Duration::from_millis(250),
+                &format!("deploy service '{}'", service_name),
+                |_| container_provider.run_service(request.clone()),
+            )
+            .await
+            .with_context(|| format!("Failed to deploy service {}", service_name))?;
 
             output::line(format!(
                 "✅ Deployed service: {} ({})",
