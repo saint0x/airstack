@@ -29,6 +29,7 @@ const AIRSTACK_BANNER: &str = r#"
 
 const ANIMATION_TICK_INTERVAL: Duration = Duration::from_millis(220);
 const REFRESH_EVERY_TICKS: u64 = 3;
+const SHIMMER_STEP_TICKS: u64 = 3;
 const STONE_BG: PackedRgba = PackedRgba::rgb(31, 36, 40);
 const STONE_PANEL: PackedRgba = PackedRgba::rgb(41, 47, 52);
 const STONE_EDGE: PackedRgba = PackedRgba::rgb(58, 66, 74);
@@ -980,7 +981,7 @@ fn shimmer_line(width: usize, ticks: u64) -> String {
         return "-".repeat(width);
     }
     let mut chars = vec!['-'; width];
-    let pos = (ticks as usize) % width;
+    let pos = ((ticks / SHIMMER_STEP_TICKS) as usize) % width;
     chars[pos] = '*';
     chars.into_iter().collect()
 }
