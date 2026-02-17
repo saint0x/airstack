@@ -35,6 +35,7 @@ const STONE_MUTED: PackedRgba = PackedRgba::rgb(149, 161, 172);
 const STEEL_MAIN: PackedRgba = PackedRgba::rgb(161, 194, 220);
 const STEEL_BRIGHT: PackedRgba = PackedRgba::rgb(206, 226, 242);
 const TEXT_MAIN: PackedRgba = PackedRgba::rgb(224, 229, 233);
+const SPINNER_FRAMES: &[&str] = &["|", "/", "-", "\\"];
 
 const VIEWS: &[&str] = &[
     "Dashboard",
@@ -303,7 +304,13 @@ impl Model for AirstackTuiApp {
             self.summary.last_refresh_ok,
             frame,
         );
-        render_navigation(cols[0], self.selected_view, self.active_pane, frame);
+        render_navigation(
+            cols[0],
+            self.selected_view,
+            self.active_pane,
+            self.ticks,
+            frame,
+        );
         render_workspace(
             cols[1],
             self.selected_view,
@@ -311,8 +318,8 @@ impl Model for AirstackTuiApp {
             self.active_pane,
             frame,
         );
-        render_telemetry(cols[2], &self.summary, self.active_pane, frame);
-        render_footer(footer, self.palette_open, frame);
+        render_telemetry(cols[2], &self.summary, self.active_pane, self.ticks, frame);
+        render_footer(footer, self.palette_open, self.ticks, frame);
 
         if self.palette_open {
             render_palette(root, self, frame);
@@ -533,15 +540,24 @@ fn render_header(
         Pane::Telemetry => "Telemetry",
     };
     let health = if refresh_ok { "SYNCED" } else { "STALE" };
+    let spin = spinner_frame(ticks);
+    let shimmer = shimmer_line(header.width as usize, ticks);
+    let meter = pulse_meter(16, ticks);
     Paragraph::new(format!(
-        "view: {:<10}  focus: {:<10}  tick: {:<8}  sync: {}\n\nkeys: q/esc quit | : palette | tab pane switch",
-        VIEWS[selected_view], pane, ticks, health
+        "view: {:<10}  focus: {:<10}  tick: {:<8}  sync:{} {}\n{}\nmotion: [{}]\n\nkeys: q/esc quit | : palette | tab pane switch",
+        VIEWS[selected_view], pane, ticks, health, spin, shimmer, meter
     ))
     .style(Style::new().fg(STEEL_BRIGHT).bg(STONE_PANEL).bold())
     .render(header, frame);
 }
 
-fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame: &mut Frame) {
+fn render_navigation(
+    area: Rect,
+    selected_view: usize,
+    active_pane: Pane,
+    ticks: u64,
+    frame: &mut Frame,
+) {
     let nav = render_panel(
         area,
         "Views",
@@ -551,14 +567,18 @@ fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame:
     let mut lines = String::new();
     lines.push_str("index  name\n");
     lines.push_str("-----  ----------------\n");
+    let nav_cursor = if ticks % 2 == 0 { ">" } else { ">>" };
     for (idx, view) in VIEWS.iter().enumerate() {
         if idx == selected_view {
-            lines.push_str(&format!(">{:>3}   {}\n", idx + 1, view));
+            lines.push_str(&format!("{}{:>3}   {}\n", nav_cursor, idx + 1, view));
         } else {
             lines.push_str(&format!(" {:>3}   {}\n", idx + 1, view));
         }
     }
-    lines.push_str("\nj/k or arrows: move\n1..9: jump");
+    lines.push_str(&format!(
+        "\nj/k or arrows: move\n1..9: jump\nspin: {}",
+        spinner_frame(ticks)
+    ));
 
     Paragraph::new(lines)
         .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL))
@@ -831,7 +851,13 @@ fn render_settings_view(summary: &TuiSummary) -> String {
     )
 }
 
-fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: &mut Frame) {
+fn render_telemetry(
+    area: Rect,
+    summary: &TuiSummary,
+    active_pane: Pane,
+    ticks: u64,
+    frame: &mut Frame,
+) {
     let telemetry = render_panel(
         area,
         "Telemetry",
@@ -851,13 +877,14 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         "idle"
     };
     let mut content = format!(
-        "pane:{}\n\nsync:{}\nservers expected:{} cached:{}\nservices expected:{} cached:{}\n\nhealth totals\n  healthy:{}  degraded:{}\n  unhealthy:{}  unknown:{}\n\ndrift",
+        "pane:{}\n\nsync:{} {}\nservers expected:{} cached:{}\nservices expected:{} cached:{}\n\nhealth totals\n  healthy:{}  degraded:{}\n  unhealthy:{}  unknown:{}\n\nactivity:{}\n\ndrift",
         focus,
         if summary.last_refresh_ok {
             "SYNCED"
         } else {
             "STALE"
         },
+        spinner_frame(ticks),
         summary.server_count,
         summary.cache_server_count,
         summary.service_count,
@@ -866,6 +893,7 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         summary.degraded_count,
         summary.unhealthy_count,
         summary.unknown_count,
+        pulse_meter(12, ticks),
     );
 
     for (label, items) in drift_lines {
@@ -881,12 +909,18 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         .render(telemetry, frame);
 }
 
-fn render_footer(area: Rect, palette_open: bool, frame: &mut Frame) {
+fn render_footer(area: Rect, palette_open: bool, ticks: u64, frame: &mut Frame) {
     let footer = render_panel(area, "Controls", false, frame);
     let message = if palette_open {
-        "PALETTE mode | type filter | Enter run | Esc close"
+        format!(
+            "PALETTE mode {} | type filter | Enter run | Esc close",
+            spinner_frame(ticks)
+        )
     } else {
-        "Tab focus | j/k view | 1..9 jump | : palette | q quit"
+        format!(
+            "Tab focus | j/k view | 1..9 jump | : palette | q quit | {}",
+            shimmer_line(14, ticks)
+        )
     };
     Paragraph::new(message)
         .style(Style::new().fg(STONE_MUTED).bg(STONE_PANEL))
@@ -915,6 +949,38 @@ fn render_palette(root: Rect, app: &AirstackTuiApp, frame: &mut Frame) {
     Paragraph::new(lines)
         .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL).bold())
         .render(inner, frame);
+}
+
+fn spinner_frame(ticks: u64) -> &'static str {
+    SPINNER_FRAMES[(ticks as usize) % SPINNER_FRAMES.len()]
+}
+
+fn pulse_meter(width: usize, ticks: u64) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let head = (ticks as usize) % width;
+    let mut out = String::with_capacity(width);
+    for idx in 0..width {
+        if idx == head {
+            out.push('>');
+        } else if idx < head {
+            out.push('=');
+        } else {
+            out.push('.');
+        }
+    }
+    out
+}
+
+fn shimmer_line(width: usize, ticks: u64) -> String {
+    if width < 4 {
+        return "-".repeat(width);
+    }
+    let mut chars = vec!['-'; width];
+    let pos = (ticks as usize) % width;
+    chars[pos] = '*';
+    chars.into_iter().collect()
 }
 
 fn render_panel(area: Rect, title: &str, focused: bool, frame: &mut Frame) -> Rect {
