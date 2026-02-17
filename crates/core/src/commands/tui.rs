@@ -10,6 +10,8 @@ use ftui::render::cell::PackedRgba;
 use ftui::render::frame::Frame;
 use ftui::runtime::{Cmd, Model, Program, ProgramConfig};
 use ftui::style::Style;
+use ftui::widgets::block::Block;
+use ftui::widgets::borders::BorderType;
 use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::Widget;
 
@@ -28,6 +30,7 @@ const AIRSTACK_BANNER: &str = r#"
 const TICK_INTERVAL: Duration = Duration::from_millis(600);
 const STONE_BG: PackedRgba = PackedRgba::rgb(31, 36, 40);
 const STONE_PANEL: PackedRgba = PackedRgba::rgb(41, 47, 52);
+const STONE_EDGE: PackedRgba = PackedRgba::rgb(58, 66, 74);
 const STONE_MUTED: PackedRgba = PackedRgba::rgb(149, 161, 172);
 const STEEL_MAIN: PackedRgba = PackedRgba::rgb(161, 194, 220);
 const STEEL_BRIGHT: PackedRgba = PackedRgba::rgb(206, 226, 242);
@@ -523,6 +526,7 @@ fn render_header(
     refresh_ok: bool,
     frame: &mut Frame,
 ) {
+    let header = render_panel(area, "Airstack Runtime", true, frame);
     let pane = match active_pane {
         Pane::Navigation => "Navigation",
         Pane::Workspace => "Workspace",
@@ -530,46 +534,35 @@ fn render_header(
     };
     let health = if refresh_ok { "SYNCED" } else { "STALE" };
     Paragraph::new(format!(
-        "AIRSTACK runtime\n  view={}  pane={}  tick={}  sync={}\n  keys: q/esc quit  : palette  tab focus",
+        "view: {:<10}  focus: {:<10}  tick: {:<8}  sync: {}\n\nkeys: q/esc quit | : palette | tab pane switch",
         VIEWS[selected_view], pane, ticks, health
     ))
-    .style(
-        Style::new()
-            .fg(STEEL_BRIGHT)
-            .bg(STONE_BG)
-            .bold(),
-    )
-    .render(area, frame);
+    .style(Style::new().fg(STEEL_BRIGHT).bg(STONE_PANEL).bold())
+    .render(header, frame);
 }
 
 fn render_navigation(area: Rect, selected_view: usize, active_pane: Pane, frame: &mut Frame) {
+    let nav = render_panel(
+        area,
+        "Views",
+        matches!(active_pane, Pane::Navigation),
+        frame,
+    );
     let mut lines = String::new();
-    let focus = if matches!(active_pane, Pane::Navigation) {
-        "FOCUS"
-    } else {
-        "idle"
-    };
-    lines.push_str(&format!("nav  [{}]\n", focus));
+    lines.push_str("index  name\n");
+    lines.push_str("-----  ----------------\n");
     for (idx, view) in VIEWS.iter().enumerate() {
         if idx == selected_view {
-            lines.push_str(&format!("  > {:>2}. {}\n", idx + 1, view));
+            lines.push_str(&format!(">{:>3}   {}\n", idx + 1, view));
         } else {
-            lines.push_str(&format!("    {:>2}. {}\n", idx + 1, view));
+            lines.push_str(&format!(" {:>3}   {}\n", idx + 1, view));
         }
     }
-    lines.push_str("\nlog\n  INFO  j/k arrows switch view\n  INFO  1..9 jump  : open palette");
+    lines.push_str("\nj/k or arrows: move\n1..9: jump");
 
     Paragraph::new(lines)
-        .style(
-            Style::new()
-                .fg(if matches!(active_pane, Pane::Navigation) {
-                    STEEL_BRIGHT
-                } else {
-                    STEEL_MAIN
-                })
-                .bg(STONE_BG),
-        )
-        .render(area, frame);
+        .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL))
+        .render(nav, frame);
 }
 
 fn render_workspace(
@@ -579,6 +572,12 @@ fn render_workspace(
     active_pane: Pane,
     frame: &mut Frame,
 ) {
+    let workspace = render_panel(
+        area,
+        VIEWS[selected_view],
+        matches!(active_pane, Pane::Workspace),
+        frame,
+    );
     let description = summary
         .project_description
         .clone()
@@ -598,21 +597,13 @@ fn render_workspace(
     };
 
     Paragraph::new(content)
-        .style(
-            Style::new()
-                .fg(if matches!(active_pane, Pane::Workspace) {
-                    TEXT_MAIN
-                } else {
-                    STEEL_MAIN
-                })
-                .bg(STONE_BG),
-        )
-        .render(area, frame);
+        .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL))
+        .render(workspace, frame);
 }
 
 fn render_dashboard_view(summary: &TuiSummary, description: &str) -> String {
     format!(
-        "workspace.dashboard\n  INFO  Project: {}\n  INFO  Description: {}\n\n  INFO  Desired servers={}  cached={}\n  INFO  Desired services={}  cached={}\n\n  INFO  Health from cache\n    - healthy={}\n    - degraded={}\n    - unhealthy={}\n    - unknown={}\n\n  INFO  Drift signals\n    - missing_servers={}\n    - extra_servers={}\n    - missing_services={}\n    - extra_services={}\n\n  INFO  state_cache_updated_at_unix={}",
+        "project\n  name: {}\n  description: {}\n\ninventory\n  servers  desired:{}  cached:{}\n  services desired:{}  cached:{}\n\nhealth snapshot\n  healthy:{}  degraded:{}  unhealthy:{}  unknown:{}\n\ndrift\n  missing servers:{}  extra servers:{}\n  missing services:{}  extra services:{}\n\ncache timestamp\n  updated_at_unix:{}",
         summary.project_name,
         description,
         summary.server_count,
@@ -632,10 +623,10 @@ fn render_dashboard_view(summary: &TuiSummary, description: &str) -> String {
 }
 
 fn render_servers_view(summary: &TuiSummary) -> String {
-    let mut lines = vec!["workspace.servers".to_string(), String::new()];
+    let mut lines = vec!["server inventory".to_string(), String::new()];
 
     if summary.servers.is_empty() {
-        lines.push("  WARN  no servers defined in config".to_string());
+        lines.push("no servers defined in config".to_string());
     } else {
         for server in &summary.servers {
             let cached = if server.cached_id.is_some() || server.cached_public_ip.is_some() {
@@ -644,26 +635,27 @@ fn render_servers_view(summary: &TuiSummary) -> String {
                 "not-cached"
             };
             lines.push(format!(
-                "  INFO  {} [{}] {} {} ({}, health={})",
+                "{} [{}] {} {}\n  health:{}  cache:{}",
                 server.name,
                 server.provider,
                 server.region,
                 server.server_type,
-                cached,
-                server.cached_health.as_str()
+                server.cached_health.as_str(),
+                cached
             ));
             if let Some(id) = &server.cached_id {
-                lines.push(format!("    -> id: {}", id));
+                lines.push(format!("  id: {}", id));
             }
             if let Some(ip) = &server.cached_public_ip {
-                lines.push(format!("    -> public_ip: {}", ip));
+                lines.push(format!("  public_ip: {}", ip));
             }
             if let Some(status) = &server.cached_last_status {
                 lines.push(format!(
-                    "    -> last_status: {} @ {}",
+                    "  last_status: {} @ {}",
                     status, server.cached_last_checked_unix
                 ));
             }
+            lines.push(String::new());
         }
     }
 
@@ -671,10 +663,10 @@ fn render_servers_view(summary: &TuiSummary) -> String {
 }
 
 fn render_services_view(summary: &TuiSummary) -> String {
-    let mut lines = vec!["workspace.services".to_string(), String::new()];
+    let mut lines = vec!["service topology".to_string(), String::new()];
 
     if summary.services.is_empty() {
-        lines.push("  WARN  no services defined in config.".to_string());
+        lines.push("no services defined in config".to_string());
     } else {
         for service in &summary.services {
             let deps = if service.depends_on.is_empty() {
@@ -687,7 +679,7 @@ fn render_services_view(summary: &TuiSummary) -> String {
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "n/a".to_string());
             lines.push(format!(
-                "  INFO  {} -> {} | ports={:?} | deps={} | cached_replicas={} | health={}",
+                "{}\n  image:{}\n  ports:{:?}\n  deps:{}\n  replicas:{}  health:{}",
                 service.name,
                 service.image,
                 service.ports,
@@ -697,16 +689,17 @@ fn render_services_view(summary: &TuiSummary) -> String {
             ));
             if !service.cached_containers.is_empty() {
                 lines.push(format!(
-                    "    -> containers: {}",
+                    "  containers: {}",
                     service.cached_containers.join(", ")
                 ));
             }
             if let Some(status) = &service.cached_last_status {
                 lines.push(format!(
-                    "    -> last_status: {} @ {}",
+                    "  last_status: {} @ {}",
                     status, service.cached_last_checked_unix
                 ));
             }
+            lines.push(String::new());
         }
     }
 
@@ -721,17 +714,17 @@ fn render_logs_view(summary: &TuiSummary) -> String {
         .unwrap_or("<service>");
 
     format!(
-        "workspace.logs\n  INFO  structured streaming shortcuts\n  -> airstack logs {hot_service} --follow\n  -> airstack logs {hot_service} --tail 200\n  -> airstack --json logs {hot_service} --tail 100\n\n  INFO  refresh={} cache_services={}",
+        "quick commands\n  airstack logs {hot_service} --follow\n  airstack logs {hot_service} --tail 200\n  airstack --json logs {hot_service} --tail 100\n\nstream state\n  refresh:{}  cached_services:{}",
         if summary.last_refresh_ok { "healthy" } else { "stale" },
         summary.cache_service_count,
     )
 }
 
 fn render_scaling_view(summary: &TuiSummary) -> String {
-    let mut lines = vec!["workspace.scaling".to_string(), String::new()];
+    let mut lines = vec!["scaling plan".to_string(), String::new()];
 
     if summary.services.is_empty() {
-        lines.push("  WARN  no services available for scaling".to_string());
+        lines.push("no services available for scaling".to_string());
         return lines.join("\n");
     }
 
@@ -746,25 +739,25 @@ fn render_scaling_view(summary: &TuiSummary) -> String {
             None => "not-deployed",
         };
         lines.push(format!(
-            "  INFO  {} | desired=1 | cached={} | {}",
+            "{}\n  desired:1  cached:{}  state:{}",
             service.name, cached_replicas, signal
         ));
+        lines.push(String::new());
     }
-    lines.push(String::new());
-    lines.push("  -> airstack scale <service> <replicas>".to_string());
+    lines.push("command: airstack scale <service> <replicas>".to_string());
 
     lines.join("\n")
 }
 
 fn render_network_view(summary: &TuiSummary) -> String {
-    let mut lines = vec!["workspace.network".to_string(), String::new()];
+    let mut lines = vec!["network exposure".to_string(), String::new()];
 
     if summary.services.is_empty() {
-        lines.push("  WARN  no service ports configured".to_string());
+        lines.push("no service ports configured".to_string());
     } else {
         for service in &summary.services {
             if service.ports.is_empty() {
-                lines.push(format!("  INFO  {} | no exposed ports", service.name));
+                lines.push(format!("{}: no exposed ports", service.name));
                 continue;
             }
             let ports = service
@@ -773,17 +766,17 @@ fn render_network_view(summary: &TuiSummary) -> String {
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            lines.push(format!("  INFO  {} | ports {}", service.name, ports));
+            lines.push(format!("{}: ports {}", service.name, ports));
         }
     }
 
     lines.push(String::new());
-    lines.push("  INFO  embedded proxy/load-balancer integration is planned".to_string());
+    lines.push("proxy/load-balancer integration planned".to_string());
     lines.join("\n")
 }
 
 fn render_providers_view(summary: &TuiSummary) -> String {
-    let mut lines = vec!["workspace.providers".to_string(), String::new()];
+    let mut lines = vec!["providers".to_string(), String::new()];
 
     for provider in &summary.providers {
         let capability = if provider == "docker" {
@@ -791,15 +784,15 @@ fn render_providers_view(summary: &TuiSummary) -> String {
         } else {
             "infrastructure"
         };
-        lines.push(format!("  INFO  {} ({})", provider, capability));
+        lines.push(format!("{} ({})", provider, capability));
     }
 
     if summary.providers.is_empty() {
-        lines.push("  WARN  no providers discovered from config/state".to_string());
+        lines.push("no providers discovered from config/state".to_string());
     }
 
     lines.push(String::new());
-    lines.push("  INFO  provider discovery and capability flags remain in roadmap".to_string());
+    lines.push("provider discovery and capability flags remain in roadmap".to_string());
     lines.join("\n")
 }
 
@@ -807,31 +800,31 @@ fn render_ssh_view(summary: &TuiSummary) -> String {
     let mut lines = vec![
         "workspace.ssh".to_string(),
         String::new(),
-        "  INFO  embedded terminal panel is bootstrapped".to_string(),
-        "  INFO  full session multiplexing remains planned".to_string(),
+        "embedded terminal panel is bootstrapped".to_string(),
+        "full session multiplexing remains planned".to_string(),
         String::new(),
-        "  INFO  server targets".to_string(),
+        "server targets".to_string(),
     ];
 
     if summary.servers.is_empty() {
-        lines.push("    - none".to_string());
+        lines.push("  - none".to_string());
     } else {
         for server in &summary.servers {
             lines.push(format!(
-                "    - {} ({}/{})",
+                "  - {} ({}/{})",
                 server.name, server.provider, server.region
             ));
         }
     }
 
     lines.push(String::new());
-    lines.push("  -> airstack ssh <server> [command ...]".to_string());
+    lines.push("command: airstack ssh <server> [command ...]".to_string());
     lines.join("\n")
 }
 
 fn render_settings_view(summary: &TuiSummary) -> String {
     format!(
-        "workspace.settings\n  INFO  project={}\n  INFO  refresh_interval={}ms\n  INFO  json_mode=unsupported in tui\n  INFO  quiet_banner={}\n\n  INFO  runtime notes\n    - live refresh on periodic tick\n    - cached state drift surfaced in telemetry\n    - command palette supports view jumps and refresh",
+        "runtime settings\n  project:{}\n  refresh_interval:{}ms\n  json_mode:unsupported in tui\n  quiet_banner:{}\n\nnotes\n  - live refresh on periodic tick\n  - cached state drift surfaced in telemetry\n  - command palette supports view jumps and refresh",
         summary.project_name,
         TICK_INTERVAL.as_millis(),
         if output::is_quiet() { "enabled" } else { "disabled" }
@@ -839,6 +832,12 @@ fn render_settings_view(summary: &TuiSummary) -> String {
 }
 
 fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: &mut Frame) {
+    let telemetry = render_panel(
+        area,
+        "Telemetry",
+        matches!(active_pane, Pane::Telemetry),
+        frame,
+    );
     let drift_lines = [
         ("Missing srv", &summary.drift.missing_servers_in_cache),
         ("Extra srv", &summary.drift.extra_servers_in_cache),
@@ -852,7 +851,7 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         "idle"
     };
     let mut content = format!(
-        "telemetry  [{}]\n  INFO  sync={}\n  INFO  servers expected={} cached={}\n  INFO  services expected={} cached={}\n\n  INFO  cached health totals\n    - healthy={}\n    - degraded={}\n    - unhealthy={}\n    - unknown={}\n\n  INFO  drift detail",
+        "pane:{}\n\nsync:{}\nservers expected:{} cached:{}\nservices expected:{} cached:{}\n\nhealth totals\n  healthy:{}  degraded:{}\n  unhealthy:{}  unknown:{}\n\ndrift",
         focus,
         if summary.last_refresh_ok {
             "SYNCED"
@@ -871,38 +870,32 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
 
     for (label, items) in drift_lines {
         if items.is_empty() {
-            content.push_str(&format!("\n    - {}: none", label));
+            content.push_str(&format!("\n  {}: none", label));
         } else {
-            content.push_str(&format!("\n    - {}: {}", label, items.join(",")));
+            content.push_str(&format!("\n  {}: {}", label, items.join(", ")));
         }
     }
 
     Paragraph::new(content)
-        .style(
-            Style::new()
-                .fg(if matches!(active_pane, Pane::Telemetry) {
-                    STEEL_BRIGHT
-                } else {
-                    STEEL_MAIN
-                })
-                .bg(STONE_BG),
-        )
-        .render(area, frame);
+        .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL))
+        .render(telemetry, frame);
 }
 
 fn render_footer(area: Rect, palette_open: bool, frame: &mut Frame) {
+    let footer = render_panel(area, "Controls", false, frame);
     let message = if palette_open {
         "PALETTE mode | type filter | Enter run | Esc close"
     } else {
         "Tab focus | j/k view | 1..9 jump | : palette | q quit"
     };
     Paragraph::new(message)
-        .style(Style::new().fg(STONE_MUTED).bg(STONE_BG))
-        .render(area, frame);
+        .style(Style::new().fg(STONE_MUTED).bg(STONE_PANEL))
+        .render(footer, frame);
 }
 
 fn render_palette(root: Rect, app: &AirstackTuiApp, frame: &mut Frame) {
     let popup = centered_rect(root, 65, 42);
+    let inner = render_panel(popup, "Command Palette", true, frame);
     let actions = app.filtered_actions();
 
     let mut lines = String::new();
@@ -921,7 +914,36 @@ fn render_palette(root: Rect, app: &AirstackTuiApp, frame: &mut Frame) {
 
     Paragraph::new(lines)
         .style(Style::new().fg(TEXT_MAIN).bg(STONE_PANEL).bold())
-        .render(popup, frame);
+        .render(inner, frame);
+}
+
+fn render_panel(area: Rect, title: &str, focused: bool, frame: &mut Frame) -> Rect {
+    Paragraph::new("")
+        .style(Style::new().bg(STONE_PANEL))
+        .render(area, frame);
+
+    Block::bordered()
+        .title(title)
+        .border_type(BorderType::Square)
+        .border_style(
+            Style::new()
+                .fg(if focused { STEEL_MAIN } else { STONE_EDGE })
+                .bg(STONE_PANEL),
+        )
+        .render(area, frame);
+
+    inset(area, 1)
+}
+
+fn inset(area: Rect, pad: u16) -> Rect {
+    let width = area.width.saturating_sub(pad.saturating_mul(2)).max(1);
+    let height = area.height.saturating_sub(pad.saturating_mul(2)).max(1);
+    Rect::new(
+        area.x.saturating_add(pad),
+        area.y.saturating_add(pad),
+        width,
+        height,
+    )
 }
 
 fn render_background(area: Rect, frame: &mut Frame) {
@@ -1038,18 +1060,18 @@ mod tests {
     fn dashboard_view_includes_drift_counts() {
         let summary = sample_summary();
         let rendered = render_dashboard_view(&summary, "demo project");
-        assert!(rendered.contains("missing_servers=1"));
-        assert!(rendered.contains("missing_services=1"));
-        assert!(rendered.contains("extra_services=1"));
+        assert!(rendered.contains("missing servers:1"));
+        assert!(rendered.contains("missing services:1"));
+        assert!(rendered.contains("extra services:1"));
     }
 
     #[test]
     fn services_view_includes_dependency_and_replicas() {
         let summary = sample_summary();
         let rendered = render_services_view(&summary);
-        assert!(rendered.contains("api -> api:v1"));
-        assert!(rendered.contains("deps=db"));
-        assert!(rendered.contains("cached_replicas=2"));
+        assert!(rendered.contains("api\n  image:api:v1"));
+        assert!(rendered.contains("deps:db"));
+        assert!(rendered.contains("replicas:2"));
     }
 
     #[test]
