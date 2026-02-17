@@ -1,0 +1,4 @@
+[submodule "frankentui"]
+	path = frankentui
+	url = https://github.com/Dicklesworthstone/frankentui.git
+	ignore = dirty

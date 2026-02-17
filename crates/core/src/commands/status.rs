@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 
 use crate::output;
+use crate::state::DriftReport;
+use crate::state::LocalState;
 
 #[derive(Debug, Serialize)]
 struct ServerStatusRecord {
@@ -34,10 +36,13 @@ struct StatusOutput {
     description: Option<String>,
     infrastructure: Vec<ServerStatusRecord>,
     services: Vec<ServiceStatusRecord>,
+    drift: DriftReport,
 }
 
 pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let state = LocalState::load(&config.project.name)?;
+    let drift = state.detect_drift(&config);
 
     info!("Checking status for project: {}", config.project.name);
 
@@ -264,8 +269,41 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
             description: config.project.description,
             infrastructure: infra_records,
             services: service_records,
+            drift,
         })?;
     } else {
+        if !drift.missing_servers_in_cache.is_empty()
+            || !drift.extra_servers_in_cache.is_empty()
+            || !drift.missing_services_in_cache.is_empty()
+            || !drift.extra_services_in_cache.is_empty()
+        {
+            output::line("🟢 State Drift (cache vs config):");
+            if !drift.missing_servers_in_cache.is_empty() {
+                output::line(format!(
+                    "   Missing servers in cache: {:?}",
+                    drift.missing_servers_in_cache
+                ));
+            }
+            if !drift.extra_servers_in_cache.is_empty() {
+                output::line(format!(
+                    "   Extra servers in cache: {:?}",
+                    drift.extra_servers_in_cache
+                ));
+            }
+            if !drift.missing_services_in_cache.is_empty() {
+                output::line(format!(
+                    "   Missing services in cache: {:?}",
+                    drift.missing_services_in_cache
+                ));
+            }
+            if !drift.extra_services_in_cache.is_empty() {
+                output::line(format!(
+                    "   Extra services in cache: {:?}",
+                    drift.extra_services_in_cache
+                ));
+            }
+            output::line("");
+        }
         output::line("Use 'airstack status --detailed' for more information");
     }
 

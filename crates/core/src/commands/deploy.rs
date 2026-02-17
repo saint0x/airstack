@@ -1,5 +1,6 @@
 use crate::dependencies::deployment_order;
 use crate::output;
+use crate::state::{LocalState, ServiceState};
 use airstack_config::AirstackConfig;
 use airstack_container::{get_provider as get_container_provider, RunServiceRequest};
 use anyhow::{Context, Result};
@@ -23,6 +24,7 @@ struct DeployOutput {
 
 pub async fn run(config_path: &str, service_name: &str, _target: Option<String>) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let mut state = LocalState::load(&config.project.name)?;
 
     info!("Deploying service: {}", service_name);
 
@@ -87,7 +89,18 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
             status: format!("{:?}", container.status),
             ports,
         });
+
+        state.services.insert(
+            deploy_name.to_string(),
+            ServiceState {
+                image: service.image.clone(),
+                replicas: 1,
+                containers: vec![deploy_name.to_string()],
+            },
+        );
     }
+
+    state.save()?;
 
     if output::is_json() {
         let payload = DeployOutput {

@@ -8,6 +8,7 @@ use tracing::{info, warn};
 
 use crate::dependencies::deployment_order;
 use crate::output;
+use crate::state::{LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
 struct UpServerRecord {
@@ -40,6 +41,7 @@ pub async fn run(
     dry_run: bool,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let mut state = LocalState::load(&config.project.name)?;
 
     info!(
         "Provisioning infrastructure for project: {}",
@@ -84,6 +86,8 @@ pub async fn run(
                 .find(|s| s.name == server.name);
 
             if let Some(existing_server) = existing {
+                let existing_id = existing_server.id.clone();
+                let existing_ip = existing_server.public_ip.clone();
                 output::line(format!(
                     "✅ Server already exists: {} ({})",
                     existing_server.name, existing_server.id
@@ -92,9 +96,17 @@ pub async fn run(
                     name: existing_server.name,
                     provider: server.provider.clone(),
                     action: "unchanged".to_string(),
-                    id: Some(existing_server.id),
-                    public_ip: existing_server.public_ip,
+                    id: Some(existing_id.clone()),
+                    public_ip: existing_ip.clone(),
                 });
+                state.servers.insert(
+                    server.name.clone(),
+                    ServerState {
+                        provider: server.provider.clone(),
+                        id: Some(existing_id),
+                        public_ip: existing_ip,
+                    },
+                );
                 continue;
             }
 
@@ -108,6 +120,8 @@ pub async fn run(
 
             match metal_provider.create_server(request).await {
                 Ok(created_server) => {
+                    let created_id = created_server.id.clone();
+                    let created_ip = created_server.public_ip.clone();
                     output::line(format!(
                         "✅ Created server: {} ({})",
                         created_server.name, created_server.id
@@ -119,9 +133,17 @@ pub async fn run(
                         name: created_server.name,
                         provider: server.provider.clone(),
                         action: "created".to_string(),
-                        id: Some(created_server.id),
-                        public_ip: created_server.public_ip,
+                        id: Some(created_id.clone()),
+                        public_ip: created_ip.clone(),
                     });
+                    state.servers.insert(
+                        server.name.clone(),
+                        ServerState {
+                            provider: server.provider.clone(),
+                            id: Some(created_id),
+                            public_ip: created_ip,
+                        },
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to create server {}: {}", server.name, e);
@@ -173,11 +195,23 @@ pub async fn run(
                 service_name, container.id
             ));
             service_records.push(UpServiceRecord {
-                name: service_name,
+                name: service_name.clone(),
                 image: service.image.clone(),
                 container_id: Some(container.id),
             });
+            state.services.insert(
+                service_name.clone(),
+                ServiceState {
+                    image: service.image.clone(),
+                    replicas: 1,
+                    containers: vec![service_name.clone()],
+                },
+            );
         }
+    }
+
+    if !dry_run {
+        state.save()?;
     }
 
     if output::is_json() {

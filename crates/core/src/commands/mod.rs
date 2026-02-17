@@ -5,4 +5,5 @@ pub mod logs;
 pub mod scale;
 pub mod ssh;
 pub mod status;
+pub mod tui;
 pub mod up;

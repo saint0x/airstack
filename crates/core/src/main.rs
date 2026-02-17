@@ -6,6 +6,7 @@ use tracing_subscriber::FmtSubscriber;
 mod commands;
 mod dependencies;
 mod output;
+mod state;
 
 #[derive(Parser)]
 #[command(name = "airstack")]
@@ -79,6 +80,14 @@ enum Commands {
         #[arg(help = "Target number of replicas")]
         replicas: usize,
     },
+    #[command(about = "Launch the FrankenTUI-powered Airstack interface")]
+    Tui {
+        #[arg(
+            long,
+            help = "FrankenTUI showcase view (dashboard, visual_effects, etc.)"
+        )]
+        view: Option<String>,
+    },
     #[command(about = "Show status of infrastructure and services")]
     Status {
         #[arg(long, help = "Show detailed status")]
@@ -109,6 +118,8 @@ async fn main() -> Result<()> {
 
     let level = if cli.verbose {
         Level::DEBUG
+    } else if cli.json || cli.quiet {
+        Level::ERROR
     } else {
         Level::INFO
     };
@@ -141,6 +152,7 @@ async fn main() -> Result<()> {
         Commands::Scale { service, replicas } => {
             commands::scale::run(&cli.config, &service, replicas).await
         }
+        Commands::Tui { view } => commands::tui::run(view).await,
         Commands::Status { detailed } => commands::status::run(&cli.config, detailed).await,
         Commands::Ssh { target, command } => {
             commands::ssh::run(&cli.config, &target, command).await

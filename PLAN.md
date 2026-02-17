@@ -74,7 +74,7 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 - ⬜ Provider discovery
 
 10) TUI System
-- ⬜ Global layout engine
+- 🟢 Global layout engine (FrankenTUI integration bootstrapped)
 - ⬜ Dashboard view
 - ⬜ Server list view
 - ⬜ Service grid view
@@ -96,10 +96,10 @@ Legend: `✅` done, `🟢` in progress/partial, `⬜` not started.
 - ⬜ Example automation scripts
 
 13) State Management (Local-First)
-- ⬜ State cache layer
-- ⬜ Server inventory cache
-- ⬜ Service registry cache
-- ⬜ Drift detection
+- 🟢 State cache layer
+- 🟢 Server inventory cache
+- 🟢 Service registry cache
+- 🟢 Drift detection
 
 14) Project Lifecycle Commands
 - 🟢 Command routing layer
@@ -122,6 +122,40 @@ Current implementation focus
 - Complete robust scaling + dependency-aware deploy order.
 - Add machine-readable CLI output (`--json`) without breaking existing text output.
 - Introduce local state cache and drift detection for idempotent reconcile loops.
+- Integrate FrankenTUI as the production TUI runtime and design system.
+
+FrankenTUI Integration Plan (Production Track)
+
+Source of truth
+- `frankentui/` git submodule from [Dicklesworthstone/frankentui](https://github.com/Dicklesworthstone/frankentui)
+- Use FrankenTUI runtime, renderer, layout, widgets, and style crates as the TUI engine
+
+Architecture decisions
+- Keep `airstack-core` as orchestration/runtime engine
+- Add `airstack tui` command as TUI entry point
+- Build Airstack TUI app as a thin adapter on top of FrankenTUI primitives
+- Keep CLI and TUI command parity (same underlying operations)
+
+Design and UX direction
+- Distinct Airstack ASCII startup banner on launch
+- High-contrast but restrained palette (no noisy rainbow defaults)
+- Dense operational layout: left nav + center workspace + right telemetry rail
+- Smooth transitions and zero-flicker updates
+- Keyboard-first workflows with command palette and context actions
+
+Performance and reliability requirements
+- Startup target: <250ms cold start for shell + initial frame render
+- Frame budget target: 60fps for local interactions
+- Strict one-writer discipline and deterministic render diff path (FrankenTUI)
+- Avoid blocking network calls in render loop; use async state refresh workers
+- Add perf baseline scripts and regression gates before feature freeze
+
+Implementation phases
+- Phase 1: integration shell (`airstack tui`, submodule wiring, launch flow) ✅
+- Phase 2: reusable app shell (layout regions, nav model, status rail)
+- Phase 3: core views (dashboard, servers, services, logs, scale, ssh)
+- Phase 4: command palette, hotkeys, and inline action workflows
+- Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests)
 
 ⸻
 

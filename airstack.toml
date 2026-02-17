@@ -32,11 +32,7 @@ ports = [6379]
 image = "myapp/api:latest"
 ports = [3000]
 depends_on = ["database", "redis"]
-env = { 
-  DATABASE_URL = "postgres://user:password@database:5432/myapp",
-  REDIS_URL = "redis://redis:6379",
-  NODE_ENV = "production"
-}
+env = { DATABASE_URL = "postgres://user:password@database:5432/myapp", REDIS_URL = "redis://redis:6379", NODE_ENV = "production" }
 
 [services.nginx]
 image = "nginx:alpine"

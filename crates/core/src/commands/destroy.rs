@@ -1,4 +1,5 @@
 use crate::output;
+use crate::state::LocalState;
 use airstack_config::AirstackConfig;
 use airstack_metal::get_provider as get_metal_provider;
 use anyhow::{Context, Result};
@@ -17,6 +18,7 @@ struct DestroyOutput {
 
 pub async fn run(config_path: &str, _target: Option<String>, force: bool) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let mut state = LocalState::load(&config.project.name)?;
 
     info!(
         "Planning destruction of infrastructure for project: {}",
@@ -65,6 +67,7 @@ pub async fn run(config_path: &str, _target: Option<String>, force: bool) -> Res
                             Ok(_) => {
                                 output::line(format!("✅ Destroyed server: {}", server.name));
                                 destroyed.push(server.name.clone());
+                                state.servers.remove(&server.name);
                             }
                             Err(e) => {
                                 warn!("❌ Failed to destroy server {}: {}", server.name, e);
@@ -77,6 +80,7 @@ pub async fn run(config_path: &str, _target: Option<String>, force: bool) -> Res
                             server.name
                         );
                         not_found.push(server.name.clone());
+                        state.servers.remove(&server.name);
                     }
                 }
                 Err(e) => {
@@ -99,6 +103,8 @@ pub async fn run(config_path: &str, _target: Option<String>, force: bool) -> Res
     } else {
         output::line("🧹 Infrastructure destruction completed!");
     }
+
+    state.save()?;
 
     Ok(())
 }

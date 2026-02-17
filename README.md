@@ -86,6 +86,7 @@ airstack status
 | `airstack destroy` | Destroy infrastructure |
 | `airstack deploy <service>` | Deploy a service |
 | `airstack scale <service> <replicas>` | Scale service replicas |
+| `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack status` | Show status |
 | `airstack ssh <server>` | SSH into a server |
 | `airstack logs <service>` | Show service logs |
@@ -94,6 +95,22 @@ airstack status
 
 - `--json`: machine-readable structured output
 - `--quiet`: suppress human-readable output
+
+### TUI Runtime (FrankenTUI)
+
+Airstack now integrates [FrankenTUI](https://github.com/Dicklesworthstone/frankentui) via git submodule:
+
+```bash
+git submodule update --init --recursive
+airstack tui
+```
+
+Optional view targeting:
+
+```bash
+airstack tui --view dashboard
+airstack tui --view visual_effects
+```
 
 ## Configuration
 

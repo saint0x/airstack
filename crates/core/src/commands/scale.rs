@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use tracing::info;
 
 use crate::output;
+use crate::state::{LocalState, ServiceState};
 
 #[derive(Debug, Serialize)]
 struct ScaleOutput {
@@ -21,6 +22,7 @@ struct ScaleOutput {
 
 pub async fn run(config_path: &str, service_name: &str, replicas: usize) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let mut state = LocalState::load(&config.project.name)?;
 
     if replicas == 0 {
         anyhow::bail!("Replica count must be at least 1");
@@ -116,6 +118,18 @@ pub async fn run(config_path: &str, service_name: &str, replicas: usize) -> Resu
     } else {
         output::line("🎯 Scale operation completed.");
     }
+
+    state.services.insert(
+        service_name.to_string(),
+        ServiceState {
+            image: service.image.clone(),
+            replicas,
+            containers: (1..=replicas)
+                .map(|r| replica_name(service_name, r))
+                .collect(),
+        },
+    );
+    state.save()?;
 
     Ok(())
 }
