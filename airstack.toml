@@ -1,0 +1,48 @@
+[project]
+name = "airstack-example"
+description = "Example Airstack project configuration"
+
+[[infra.servers]]
+name = "web-server"
+provider = "hetzner"
+region = "nbg1"
+server_type = "cx21"
+ssh_key = "~/.ssh/id_ed25519.pub"
+floating_ip = true
+
+[[infra.servers]]
+name = "db-server"
+provider = "hetzner"
+region = "nbg1"
+server_type = "cx31"
+ssh_key = "~/.ssh/id_ed25519.pub"
+floating_ip = false
+
+[services.database]
+image = "postgres:15"
+ports = [5432]
+env = { POSTGRES_DB = "myapp", POSTGRES_USER = "user", POSTGRES_PASSWORD = "password" }
+volumes = ["./data/postgres:/var/lib/postgresql/data"]
+
+[services.redis]
+image = "redis:7-alpine"
+ports = [6379]
+
+[services.api]
+image = "myapp/api:latest"
+ports = [3000]
+depends_on = ["database", "redis"]
+env = { 
+  DATABASE_URL = "postgres://user:password@database:5432/myapp",
+  REDIS_URL = "redis://redis:6379",
+  NODE_ENV = "production"
+}
+
+[services.nginx]
+image = "nginx:alpine"
+ports = [80, 443]
+depends_on = ["api"]
+volumes = [
+  "./nginx.conf:/etc/nginx/nginx.conf",
+  "./ssl:/etc/ssl/certs"
+]

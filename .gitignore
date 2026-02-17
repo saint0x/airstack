@@ -1,0 +1,39 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+
+# Build artifacts
+bin/
+*.tgz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.production
+.airstack/
+
+# Example and test artifacts
+example/
+test-*/
+*.toml.bak
