@@ -1,7 +1,7 @@
 use crate::dependencies::deployment_order;
 use crate::output;
 use crate::retry::retry_with_backoff;
-use crate::state::{LocalState, ServiceState};
+use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
 use airstack_container::{get_provider as get_container_provider, RunServiceRequest};
 use anyhow::{Context, Result};
@@ -91,7 +91,7 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
 
         deployed.push(DeployRecord {
             service: deploy_name.to_string(),
-            container_id: container.id,
+            container_id: container.id.clone(),
             status: format!("{:?}", container.status),
             ports,
         });
@@ -102,6 +102,10 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
                 image: service.image.clone(),
                 replicas: 1,
                 containers: vec![deploy_name.to_string()],
+                health: map_container_health(container.status.clone()),
+                last_status: Some(format!("{:?}", container.status)),
+                last_checked_unix: unix_now(),
+                last_error: None,
             },
         );
     }
@@ -122,4 +126,25 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
     }
 
     Ok(())
+}
+
+fn map_container_health(status: airstack_container::ContainerStatus) -> HealthState {
+    use airstack_container::ContainerStatus;
+
+    match status {
+        ContainerStatus::Running => HealthState::Healthy,
+        ContainerStatus::Creating | ContainerStatus::Restarting => HealthState::Degraded,
+        ContainerStatus::Stopped
+        | ContainerStatus::Paused
+        | ContainerStatus::Removing
+        | ContainerStatus::Dead
+        | ContainerStatus::Exited => HealthState::Unhealthy,
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

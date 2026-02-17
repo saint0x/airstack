@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 
 use crate::output;
-use crate::state::DriftReport;
-use crate::state::LocalState;
+use crate::state::{DriftReport, HealthState, LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
 struct ServerStatusRecord {
     name: String,
     status: String,
+    cached_health: Option<String>,
+    cached_last_checked_unix: Option<u64>,
     public_ip: Option<String>,
     private_ip: Option<String>,
     server_type: Option<String>,
@@ -25,6 +26,8 @@ struct ServerStatusRecord {
 struct ServiceStatusRecord {
     name: String,
     status: String,
+    cached_health: Option<String>,
+    cached_last_checked_unix: Option<u64>,
     image: Option<String>,
     ports: Vec<String>,
     note: Option<String>,
@@ -41,7 +44,7 @@ struct StatusOutput {
 
 pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
-    let state = LocalState::load(&config.project.name)?;
+    let mut state = LocalState::load(&config.project.name)?;
     let drift = state.detect_drift(&config);
 
     info!("Checking status for project: {}", config.project.name);
@@ -70,6 +73,22 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                     Ok(servers) => {
                         if let Some(found_server) = servers.iter().find(|s| s.name == server.name) {
                             let status_text = format!("{:?}", found_server.status);
+                            let cached_health = map_server_health(found_server.status.clone());
+                            let checked_at = unix_now();
+
+                            state.servers.insert(
+                                server.name.clone(),
+                                ServerState {
+                                    provider: server.provider.clone(),
+                                    id: Some(found_server.id.clone()),
+                                    public_ip: found_server.public_ip.clone(),
+                                    health: cached_health,
+                                    last_status: Some(status_text.clone()),
+                                    last_checked_unix: checked_at,
+                                    last_error: None,
+                                },
+                            );
+
                             if !output::is_json() {
                                 let status_icon = match found_server.status {
                                     airstack_metal::ServerStatus::Running => "✅",
@@ -94,12 +113,19 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                                         found_server.server_type
                                     ));
                                     output::line(format!("      Region: {}", found_server.region));
+                                    output::line(format!(
+                                        "      Cached health: {} @ {}",
+                                        cached_health.as_str(),
+                                        checked_at
+                                    ));
                                 }
                             }
 
                             infra_records.push(ServerStatusRecord {
                                 name: found_server.name.clone(),
                                 status: status_text,
+                                cached_health: Some(cached_health.as_str().to_string()),
+                                cached_last_checked_unix: Some(checked_at),
                                 public_ip: found_server.public_ip.clone(),
                                 private_ip: found_server.private_ip.clone(),
                                 server_type: Some(found_server.server_type.clone()),
@@ -107,12 +133,28 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                                 note: None,
                             });
                         } else {
+                            let checked_at = unix_now();
+                            state.servers.insert(
+                                server.name.clone(),
+                                ServerState {
+                                    provider: server.provider.clone(),
+                                    id: None,
+                                    public_ip: None,
+                                    health: HealthState::Unhealthy,
+                                    last_status: Some("NotFound".to_string()),
+                                    last_checked_unix: checked_at,
+                                    last_error: Some("not found in provider".to_string()),
+                                },
+                            );
+
                             if !output::is_json() {
                                 output::line(format!("   ❓ {} (not found)", server.name));
                             }
                             infra_records.push(ServerStatusRecord {
                                 name: server.name.clone(),
                                 status: "NotFound".to_string(),
+                                cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                                cached_last_checked_unix: Some(checked_at),
                                 public_ip: None,
                                 private_ip: None,
                                 server_type: Some(server.server_type.clone()),
@@ -123,12 +165,33 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                     }
                     Err(e) => {
                         warn!("Failed to check server {}: {}", server.name, e);
+                        let checked_at = unix_now();
+                        let prev_id = state.servers.get(&server.name).and_then(|s| s.id.clone());
+                        let prev_ip = state
+                            .servers
+                            .get(&server.name)
+                            .and_then(|s| s.public_ip.clone());
+                        state.servers.insert(
+                            server.name.clone(),
+                            ServerState {
+                                provider: server.provider.clone(),
+                                id: prev_id,
+                                public_ip: prev_ip,
+                                health: HealthState::Unhealthy,
+                                last_status: Some("Error".to_string()),
+                                last_checked_unix: checked_at,
+                                last_error: Some(format!("error checking status: {}", e)),
+                            },
+                        );
+
                         if !output::is_json() {
                             output::line(format!("   ❌ {} (error checking status)", server.name));
                         }
                         infra_records.push(ServerStatusRecord {
                             name: server.name.clone(),
                             status: "Error".to_string(),
+                            cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                            cached_last_checked_unix: Some(checked_at),
                             public_ip: None,
                             private_ip: None,
                             server_type: Some(server.server_type.clone()),
@@ -139,12 +202,33 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                 },
                 Err(e) => {
                     warn!("Failed to initialize provider for {}: {}", server.name, e);
+                    let checked_at = unix_now();
+                    let prev_id = state.servers.get(&server.name).and_then(|s| s.id.clone());
+                    let prev_ip = state
+                        .servers
+                        .get(&server.name)
+                        .and_then(|s| s.public_ip.clone());
+                    state.servers.insert(
+                        server.name.clone(),
+                        ServerState {
+                            provider: server.provider.clone(),
+                            id: prev_id,
+                            public_ip: prev_ip,
+                            health: HealthState::Unhealthy,
+                            last_status: Some("ProviderError".to_string()),
+                            last_checked_unix: checked_at,
+                            last_error: Some(format!("provider error: {}", e)),
+                        },
+                    );
+
                     if !output::is_json() {
                         output::line(format!("   ❌ {} (provider error)", server.name));
                     }
                     infra_records.push(ServerStatusRecord {
                         name: server.name.clone(),
                         status: "ProviderError".to_string(),
+                        cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                        cached_last_checked_unix: Some(checked_at),
                         public_ip: None,
                         private_ip: None,
                         server_type: Some(server.server_type.clone()),
@@ -171,6 +255,32 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                     match container_provider.get_container(service_name).await {
                         Ok(container) => {
                             let status_text = format!("{:?}", container.status);
+                            let cached_health = map_container_health(container.status.clone());
+                            let checked_at = unix_now();
+                            let replicas = state
+                                .services
+                                .get(service_name)
+                                .map(|s| s.replicas)
+                                .unwrap_or(1);
+                            let containers = state
+                                .services
+                                .get(service_name)
+                                .map(|s| s.containers.clone())
+                                .unwrap_or_else(|| vec![service_name.clone()]);
+
+                            state.services.insert(
+                                service_name.clone(),
+                                ServiceState {
+                                    image: container.image.clone(),
+                                    replicas,
+                                    containers,
+                                    health: cached_health,
+                                    last_status: Some(status_text.clone()),
+                                    last_checked_unix: checked_at,
+                                    last_error: None,
+                                },
+                            );
+
                             if !output::is_json() {
                                 let status_icon = match container.status {
                                     airstack_container::ContainerStatus::Running => "✅",
@@ -187,6 +297,11 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 
                                 if detailed {
                                     output::line(format!("      Image: {}", container.image));
+                                    output::line(format!(
+                                        "      Cached health: {} @ {}",
+                                        cached_health.as_str(),
+                                        checked_at
+                                    ));
                                     if !container.ports.is_empty() {
                                         output::line("      Ports:");
                                         for port in &container.ports {
@@ -214,12 +329,38 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                             service_records.push(ServiceStatusRecord {
                                 name: service_name.clone(),
                                 status: status_text,
+                                cached_health: Some(cached_health.as_str().to_string()),
+                                cached_last_checked_unix: Some(checked_at),
                                 image: Some(container.image.clone()),
                                 ports,
                                 note: None,
                             });
                         }
                         Err(_) => {
+                            let checked_at = unix_now();
+                            let replicas = state
+                                .services
+                                .get(service_name)
+                                .map(|s| s.replicas)
+                                .unwrap_or(0);
+                            let containers = state
+                                .services
+                                .get(service_name)
+                                .map(|s| s.containers.clone())
+                                .unwrap_or_default();
+                            state.services.insert(
+                                service_name.clone(),
+                                ServiceState {
+                                    image: service_config.image.clone(),
+                                    replicas,
+                                    containers,
+                                    health: HealthState::Unhealthy,
+                                    last_status: Some("NotDeployed".to_string()),
+                                    last_checked_unix: checked_at,
+                                    last_error: Some("container not found".to_string()),
+                                },
+                            );
+
                             if !output::is_json() {
                                 output::line(format!("   ❓ {} (not deployed)", service_name));
                                 if detailed {
@@ -236,6 +377,8 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                             service_records.push(ServiceStatusRecord {
                                 name: service_name.clone(),
                                 status: "NotDeployed".to_string(),
+                                cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                                cached_last_checked_unix: Some(checked_at),
                                 image: Some(service_config.image.clone()),
                                 ports: Vec::new(),
                                 note: Some("container not found".to_string()),
@@ -252,6 +395,8 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                 service_records.push(ServiceStatusRecord {
                     name: "docker".to_string(),
                     status: "ProviderError".to_string(),
+                    cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                    cached_last_checked_unix: Some(unix_now()),
                     image: None,
                     ports: Vec::new(),
                     note: Some(format!("container provider init failed: {}", e)),
@@ -262,6 +407,8 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
             output::line("");
         }
     }
+
+    state.save()?;
 
     if output::is_json() {
         output::emit_json(&StatusOutput {
@@ -308,4 +455,37 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn map_server_health(status: airstack_metal::ServerStatus) -> HealthState {
+    use airstack_metal::ServerStatus;
+
+    match status {
+        ServerStatus::Running => HealthState::Healthy,
+        ServerStatus::Creating => HealthState::Degraded,
+        ServerStatus::Stopped | ServerStatus::Deleting | ServerStatus::Error => {
+            HealthState::Unhealthy
+        }
+    }
+}
+
+fn map_container_health(status: airstack_container::ContainerStatus) -> HealthState {
+    use airstack_container::ContainerStatus;
+
+    match status {
+        ContainerStatus::Running => HealthState::Healthy,
+        ContainerStatus::Creating | ContainerStatus::Restarting => HealthState::Degraded,
+        ContainerStatus::Stopped
+        | ContainerStatus::Paused
+        | ContainerStatus::Removing
+        | ContainerStatus::Dead
+        | ContainerStatus::Exited => HealthState::Unhealthy,
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

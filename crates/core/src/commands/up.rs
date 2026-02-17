@@ -1,6 +1,8 @@
 use airstack_config::AirstackConfig;
-use airstack_container::{get_provider as get_container_provider, RunServiceRequest};
-use airstack_metal::{get_provider as get_metal_provider, CreateServerRequest};
+use airstack_container::{
+    get_provider as get_container_provider, ContainerStatus, RunServiceRequest,
+};
+use airstack_metal::{get_provider as get_metal_provider, CreateServerRequest, ServerStatus};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -10,7 +12,7 @@ use tracing::{info, warn};
 use crate::dependencies::deployment_order;
 use crate::output;
 use crate::retry::retry_with_backoff;
-use crate::state::{LocalState, ServerState, ServiceState};
+use crate::state::{HealthState, LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
 struct UpServerRecord {
@@ -90,12 +92,13 @@ pub async fn run(
             if let Some(existing_server) = existing {
                 let existing_id = existing_server.id.clone();
                 let existing_ip = existing_server.public_ip.clone();
+                let existing_status = existing_server.status.clone();
                 output::line(format!(
                     "✅ Server already exists: {} ({})",
                     existing_server.name, existing_server.id
                 ));
                 server_records.push(UpServerRecord {
-                    name: existing_server.name,
+                    name: existing_server.name.clone(),
                     provider: server.provider.clone(),
                     action: "unchanged".to_string(),
                     id: Some(existing_id.clone()),
@@ -107,6 +110,10 @@ pub async fn run(
                         provider: server.provider.clone(),
                         id: Some(existing_id),
                         public_ip: existing_ip,
+                        health: map_server_health(existing_status.clone()),
+                        last_status: Some(format!("{:?}", existing_status)),
+                        last_checked_unix: unix_now(),
+                        last_error: None,
                     },
                 );
                 continue;
@@ -131,6 +138,7 @@ pub async fn run(
                 Ok(created_server) => {
                     let created_id = created_server.id.clone();
                     let created_ip = created_server.public_ip.clone();
+                    let created_status = created_server.status.clone();
                     output::line(format!(
                         "✅ Created server: {} ({})",
                         created_server.name, created_server.id
@@ -139,7 +147,7 @@ pub async fn run(
                         output::line(format!("   Public IP: {}", ip));
                     }
                     server_records.push(UpServerRecord {
-                        name: created_server.name,
+                        name: created_server.name.clone(),
                         provider: server.provider.clone(),
                         action: "created".to_string(),
                         id: Some(created_id.clone()),
@@ -151,6 +159,10 @@ pub async fn run(
                             provider: server.provider.clone(),
                             id: Some(created_id),
                             public_ip: created_ip,
+                            health: map_server_health(created_status.clone()),
+                            last_status: Some(format!("{:?}", created_status)),
+                            last_checked_unix: unix_now(),
+                            last_error: None,
                         },
                     );
                 }
@@ -202,15 +214,17 @@ pub async fn run(
             )
             .await
             .with_context(|| format!("Failed to deploy service {}", service_name))?;
+            let container_id = container.id.clone();
+            let container_status = container.status.clone();
 
             output::line(format!(
                 "✅ Deployed service: {} ({})",
-                service_name, container.id
+                service_name, container_id
             ));
             service_records.push(UpServiceRecord {
                 name: service_name.clone(),
                 image: service.image.clone(),
-                container_id: Some(container.id),
+                container_id: Some(container_id.clone()),
             });
             state.services.insert(
                 service_name.clone(),
@@ -218,6 +232,10 @@ pub async fn run(
                     image: service.image.clone(),
                     replicas: 1,
                     containers: vec![service_name.clone()],
+                    health: map_container_health(container_status.clone()),
+                    last_status: Some(format!("{:?}", container_status)),
+                    last_checked_unix: unix_now(),
+                    last_error: None,
                 },
             );
         }
@@ -239,4 +257,33 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn map_server_health(status: ServerStatus) -> HealthState {
+    match status {
+        ServerStatus::Running => HealthState::Healthy,
+        ServerStatus::Creating => HealthState::Degraded,
+        ServerStatus::Stopped | ServerStatus::Deleting | ServerStatus::Error => {
+            HealthState::Unhealthy
+        }
+    }
+}
+
+fn map_container_health(status: ContainerStatus) -> HealthState {
+    match status {
+        ContainerStatus::Running => HealthState::Healthy,
+        ContainerStatus::Creating | ContainerStatus::Restarting => HealthState::Degraded,
+        ContainerStatus::Stopped
+        | ContainerStatus::Paused
+        | ContainerStatus::Removing
+        | ContainerStatus::Dead
+        | ContainerStatus::Exited => HealthState::Unhealthy,
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

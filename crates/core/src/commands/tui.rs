@@ -16,7 +16,7 @@ use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::Widget;
 
 use crate::output;
-use crate::state::{DriftReport, LocalState};
+use crate::state::{DriftReport, HealthState, LocalState};
 
 const AIRSTACK_BANNER: &str = r#"
      _    _         _             _
@@ -70,6 +70,9 @@ struct TuiServer {
     server_type: String,
     cached_id: Option<String>,
     cached_public_ip: Option<String>,
+    cached_health: HealthState,
+    cached_last_status: Option<String>,
+    cached_last_checked_unix: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,9 @@ struct TuiService {
     depends_on: Vec<String>,
     cached_replicas: Option<usize>,
     cached_containers: Vec<String>,
+    cached_health: HealthState,
+    cached_last_status: Option<String>,
+    cached_last_checked_unix: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +102,10 @@ struct TuiSummary {
     servers: Vec<TuiServer>,
     services: Vec<TuiService>,
     providers: Vec<String>,
+    healthy_count: usize,
+    degraded_count: usize,
+    unhealthy_count: usize,
+    unknown_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +361,9 @@ fn load_summary(config_path: &str) -> Result<TuiSummary> {
                         server_type: server.server_type.clone(),
                         cached_id: cached.and_then(|s| s.id.clone()),
                         cached_public_ip: cached.and_then(|s| s.public_ip.clone()),
+                        cached_health: cached.map(|s| s.health).unwrap_or(HealthState::Unknown),
+                        cached_last_status: cached.and_then(|s| s.last_status.clone()),
+                        cached_last_checked_unix: cached.map(|s| s.last_checked_unix).unwrap_or(0),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -371,6 +384,9 @@ fn load_summary(config_path: &str) -> Result<TuiSummary> {
                         depends_on: cfg.depends_on.clone().unwrap_or_default(),
                         cached_replicas: cached.map(|s| s.replicas),
                         cached_containers: cached.map(|s| s.containers.clone()).unwrap_or_default(),
+                        cached_health: cached.map(|s| s.health).unwrap_or(HealthState::Unknown),
+                        cached_last_status: cached.and_then(|s| s.last_status.clone()),
+                        cached_last_checked_unix: cached.map(|s| s.last_checked_unix).unwrap_or(0),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -383,6 +399,27 @@ fn load_summary(config_path: &str) -> Result<TuiSummary> {
         providers.insert(server.provider.clone());
     }
     providers.insert("docker".to_string());
+
+    let mut healthy_count = 0usize;
+    let mut degraded_count = 0usize;
+    let mut unhealthy_count = 0usize;
+    let mut unknown_count = 0usize;
+    for srv in state.servers.values() {
+        match srv.health {
+            HealthState::Healthy => healthy_count += 1,
+            HealthState::Degraded => degraded_count += 1,
+            HealthState::Unhealthy => unhealthy_count += 1,
+            HealthState::Unknown => unknown_count += 1,
+        }
+    }
+    for svc in state.services.values() {
+        match svc.health {
+            HealthState::Healthy => healthy_count += 1,
+            HealthState::Degraded => degraded_count += 1,
+            HealthState::Unhealthy => unhealthy_count += 1,
+            HealthState::Unknown => unknown_count += 1,
+        }
+    }
 
     Ok(TuiSummary {
         project_name: config.project.name,
@@ -397,6 +434,10 @@ fn load_summary(config_path: &str) -> Result<TuiSummary> {
         servers,
         services,
         providers: providers.into_iter().collect(),
+        healthy_count,
+        degraded_count,
+        unhealthy_count,
+        unknown_count,
     })
 }
 
@@ -577,13 +618,17 @@ fn render_workspace(
 
 fn render_dashboard_view(summary: &TuiSummary, description: &str) -> String {
     format!(
-        "Dashboard: high-level operational summary.\n\nProject: {}\nDescription: {}\n\nDesired servers: {}\nCached servers: {}\nDesired services: {}\nCached services: {}\n\nDrift signals:\n- Missing servers: {}\n- Extra servers: {}\n- Missing services: {}\n- Extra services: {}\n\nState cache updated_at(unix): {}",
+        "Dashboard: high-level operational summary.\n\nProject: {}\nDescription: {}\n\nDesired servers: {}\nCached servers: {}\nDesired services: {}\nCached services: {}\n\nHealth from cache:\n- Healthy: {}\n- Degraded: {}\n- Unhealthy: {}\n- Unknown: {}\n\nDrift signals:\n- Missing servers: {}\n- Extra servers: {}\n- Missing services: {}\n- Extra services: {}\n\nState cache updated_at(unix): {}",
         summary.project_name,
         description,
         summary.server_count,
         summary.cache_server_count,
         summary.service_count,
         summary.cache_service_count,
+        summary.healthy_count,
+        summary.degraded_count,
+        summary.unhealthy_count,
+        summary.unknown_count,
         summary.drift.missing_servers_in_cache.len(),
         summary.drift.extra_servers_in_cache.len(),
         summary.drift.missing_services_in_cache.len(),
@@ -608,14 +653,25 @@ fn render_servers_view(summary: &TuiSummary) -> String {
                 "not-cached"
             };
             lines.push(format!(
-                "- {} [{}] {} {} ({})",
-                server.name, server.provider, server.region, server.server_type, cached
+                "- {} [{}] {} {} ({}, health={})",
+                server.name,
+                server.provider,
+                server.region,
+                server.server_type,
+                cached,
+                server.cached_health.as_str()
             ));
             if let Some(id) = &server.cached_id {
                 lines.push(format!("    id: {}", id));
             }
             if let Some(ip) = &server.cached_public_ip {
                 lines.push(format!("    public_ip: {}", ip));
+            }
+            if let Some(status) = &server.cached_last_status {
+                lines.push(format!(
+                    "    last_status: {} @ {}",
+                    status, server.cached_last_checked_unix
+                ));
             }
         }
     }
@@ -643,13 +699,24 @@ fn render_services_view(summary: &TuiSummary) -> String {
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "n/a".to_string());
             lines.push(format!(
-                "- {} -> {} | ports={:?} | deps={} | cached_replicas={}",
-                service.name, service.image, service.ports, deps, cached_replicas
+                "- {} -> {} | ports={:?} | deps={} | cached_replicas={} | health={}",
+                service.name,
+                service.image,
+                service.ports,
+                deps,
+                cached_replicas,
+                service.cached_health.as_str()
             ));
             if !service.cached_containers.is_empty() {
                 lines.push(format!(
                     "    containers: {}",
                     service.cached_containers.join(", ")
+                ));
+            }
+            if let Some(status) = &service.cached_last_status {
+                lines.push(format!(
+                    "    last_status: {} @ {}",
+                    status, service.cached_last_checked_unix
                 ));
             }
         }
@@ -801,7 +868,7 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
     ];
 
     let mut content = format!(
-        "Health: {}\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nDrift detail:",
+        "Health: {}\n\nExpected servers: {}\nCached servers: {}\n\nExpected services: {}\nCached services: {}\n\nCached health totals:\n- healthy: {}\n- degraded: {}\n- unhealthy: {}\n- unknown: {}\n\nDrift detail:",
         if summary.last_refresh_ok {
             "SYNCED"
         } else {
@@ -810,7 +877,11 @@ fn render_telemetry(area: Rect, summary: &TuiSummary, active_pane: Pane, frame: 
         summary.server_count,
         summary.cache_server_count,
         summary.service_count,
-        summary.cache_service_count
+        summary.cache_service_count,
+        summary.healthy_count,
+        summary.degraded_count,
+        summary.unhealthy_count,
+        summary.unknown_count,
     );
 
     for (label, items) in drift_lines {
@@ -938,6 +1009,9 @@ mod tests {
                 server_type: "cx21".to_string(),
                 cached_id: Some("123".to_string()),
                 cached_public_ip: Some("1.2.3.4".to_string()),
+                cached_health: HealthState::Healthy,
+                cached_last_status: Some("Running".to_string()),
+                cached_last_checked_unix: 1_700_000_100,
             }],
             services: vec![
                 TuiService {
@@ -947,6 +1021,9 @@ mod tests {
                     depends_on: vec!["db".to_string()],
                     cached_replicas: Some(2),
                     cached_containers: vec!["api".to_string(), "api-2".to_string()],
+                    cached_health: HealthState::Healthy,
+                    cached_last_status: Some("Running".to_string()),
+                    cached_last_checked_unix: 1_700_000_120,
                 },
                 TuiService {
                     name: "db".to_string(),
@@ -955,9 +1032,16 @@ mod tests {
                     depends_on: vec![],
                     cached_replicas: Some(1),
                     cached_containers: vec!["db".to_string()],
+                    cached_health: HealthState::Degraded,
+                    cached_last_status: Some("Restarting".to_string()),
+                    cached_last_checked_unix: 1_700_000_110,
                 },
             ],
             providers: vec!["docker".to_string(), "hetzner".to_string()],
+            healthy_count: 2,
+            degraded_count: 1,
+            unhealthy_count: 0,
+            unknown_count: 0,
         }
     }
 

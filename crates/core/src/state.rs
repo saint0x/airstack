@@ -12,11 +12,39 @@ pub struct LocalState {
     pub services: BTreeMap<String, ServiceState>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum HealthState {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    #[default]
+    Unknown,
+}
+
+impl HealthState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HealthState::Healthy => "healthy",
+            HealthState::Degraded => "degraded",
+            HealthState::Unhealthy => "unhealthy",
+            HealthState::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerState {
     pub provider: String,
     pub id: Option<String>,
     pub public_ip: Option<String>,
+    #[serde(default)]
+    pub health: HealthState,
+    #[serde(default)]
+    pub last_status: Option<String>,
+    #[serde(default)]
+    pub last_checked_unix: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +52,14 @@ pub struct ServiceState {
     pub image: String,
     pub replicas: usize,
     pub containers: Vec<String>,
+    #[serde(default)]
+    pub health: HealthState,
+    #[serde(default)]
+    pub last_status: Option<String>,
+    #[serde(default)]
+    pub last_checked_unix: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

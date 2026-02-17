@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use tracing::info;
 
 use crate::output;
-use crate::state::{LocalState, ServiceState};
+use crate::state::{HealthState, LocalState, ServiceState};
 
 #[derive(Debug, Serialize)]
 struct ScaleOutput {
@@ -127,11 +127,22 @@ pub async fn run(config_path: &str, service_name: &str, replicas: usize) -> Resu
             containers: (1..=replicas)
                 .map(|r| replica_name(service_name, r))
                 .collect(),
+            health: HealthState::Healthy,
+            last_status: Some("Scaled".to_string()),
+            last_checked_unix: unix_now(),
+            last_error: None,
         },
     );
     state.save()?;
 
     Ok(())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn detect_service_replicas(

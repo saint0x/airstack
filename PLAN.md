@@ -29,7 +29,7 @@ Legend: `✅` done, `🟩` in progress/partial, `⬜` not started.
 - ✅ Docker runtime implementation
 - 🟩 Service lifecycle manager
 - 🟩 Dependency ordering
-- ⬜ Health status tracking
+- 🟩 Health status tracking
 
 3) Scaling
 - 🟩 Replica tracking
