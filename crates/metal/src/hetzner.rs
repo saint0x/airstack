@@ -302,36 +302,78 @@ impl MetalProvider for HetznerProvider {
             server_id
         );
 
-        let payload = serde_json::json!({
-            "type": "assign",
-            "assignee": server_id
+        // Step 1: Create the floating IP (Hetzner requires a datacenter or location).
+        // We create it unassigned first, then assign it to the server.
+        let create_payload = serde_json::json!({
+            "type": "ipv4",
+            "home_location": "nbg1",
+            "description": format!("floating-ip-{}", server_id)
         });
 
-        let response = self
+        let create_response = self
             .client
             .post(&format!("{}/floating_ips", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_token))
-            .json(&payload)
+            .json(&create_payload)
             .send()
             .await
             .context("Failed to send create floating IP request")?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+        if !create_response.status().is_success() {
+            let error_text = create_response.text().await.unwrap_or_default();
             anyhow::bail!("Failed to create floating IP: {}", error_text);
         }
 
-        let result: serde_json::Value = response
+        let create_result: serde_json::Value = create_response
             .json()
             .await
             .context("Failed to parse create floating IP response")?;
 
-        let floating_ip = result["floating_ip"]["ip"]
+        let floating_ip_id = create_result["floating_ip"]["id"]
+            .as_u64()
+            .context("No floating IP ID in create response")?;
+
+        let floating_ip_addr = create_result["floating_ip"]["ip"]
             .as_str()
-            .context("No floating IP in response")?
+            .context("No floating IP address in create response")?
             .to_string();
 
-        info!("Successfully attached floating IP: {}", floating_ip);
-        Ok(floating_ip)
+        // Step 2: Assign the floating IP to the server via the actions endpoint.
+        let server_id_int: u64 = server_id
+            .parse()
+            .with_context(|| format!("Server ID '{}' is not a valid integer", server_id))?;
+
+        let assign_payload = serde_json::json!({
+            "server": server_id_int
+        });
+
+        let assign_response = self
+            .client
+            .post(&format!(
+                "{}/floating_ips/{}/actions/assign",
+                self.base_url, floating_ip_id
+            ))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&assign_payload)
+            .send()
+            .await
+            .context("Failed to send assign floating IP request")?;
+
+        if !assign_response.status().is_success() {
+            let error_text = assign_response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Created floating IP {} but failed to assign to server {}: {}",
+                floating_ip_addr,
+                server_id,
+                error_text
+            );
+        }
+
+        info!(
+            "Successfully created and assigned floating IP {} to server {}",
+            floating_ip_addr, server_id
+        );
+        Ok(floating_ip_addr)
     }
 }
+
