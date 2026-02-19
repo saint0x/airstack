@@ -23,6 +23,8 @@ pub async fn run(config_path: &str) -> Result<()> {
             &[
                 "Infrastructure",
                 "Services",
+                "Planning & Safety",
+                "Edge",
                 "SSH & Containers",
                 "Quick Status",
                 "Exit",
@@ -32,9 +34,11 @@ pub async fn run(config_path: &str) -> Result<()> {
         match choice {
             0 => infrastructure_menu(&theme, config_path).await?,
             1 => services_menu(&theme, config_path, &service_names).await?,
-            2 => remote_menu(&theme, config_path, &server_names, &service_names).await?,
-            3 => run_and_continue(commands::status::run(config_path, false).await),
-            4 => break,
+            2 => planning_menu(&theme, config_path).await?,
+            3 => edge_menu(&theme, config_path).await?,
+            4 => remote_menu(&theme, config_path, &server_names, &service_names).await?,
+            5 => run_and_continue(commands::status::run(config_path, false).await),
+            6 => break,
             _ => {}
         }
     }
@@ -55,7 +59,9 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
             2 => {
                 let provider = read_optional(theme, "Provider (blank = config default)")?;
                 let target = read_optional(theme, "Target env (blank = default)")?;
-                run_and_continue(commands::up::run(config_path, target, provider, false).await);
+                run_and_continue(
+                    commands::up::run(config_path, target, provider, false, false).await,
+                );
             }
             3 => {
                 let confirmed = Confirm::with_theme(theme)
@@ -91,7 +97,9 @@ async fn services_menu(
                     select_from_list(theme, "Select service to deploy", &options)?
                 {
                     if selected != "Back" {
-                        run_and_continue(commands::deploy::run(config_path, &selected, None).await);
+                        run_and_continue(
+                            commands::deploy::run(config_path, &selected, None, false).await,
+                        );
                     }
                 }
             }
@@ -123,6 +131,52 @@ async fn services_menu(
                 }
             }
             3 => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
+    loop {
+        let choice = select_index(
+            theme,
+            "Planning & Safety",
+            &["Plan", "Apply", "Doctor", "Runbook", "Back"],
+        )?;
+        match choice {
+            0 => run_and_continue(commands::plan::run(config_path, false).await),
+            1 => run_and_continue(commands::apply::run(config_path, false).await),
+            2 => run_and_continue(commands::doctor::run(config_path).await),
+            3 => run_and_continue(commands::runbook::run(config_path).await),
+            4 => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn edge_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
+    loop {
+        let choice = select_index(
+            theme,
+            "Edge",
+            &["Plan", "Validate", "Status", "Apply", "Back"],
+        )?;
+        match choice {
+            0 => run_and_continue(
+                commands::edge::run(config_path, commands::edge::EdgeCommands::Plan).await,
+            ),
+            1 => run_and_continue(
+                commands::edge::run(config_path, commands::edge::EdgeCommands::Validate).await,
+            ),
+            2 => run_and_continue(
+                commands::edge::run(config_path, commands::edge::EdgeCommands::Status).await,
+            ),
+            3 => run_and_continue(
+                commands::edge::run(config_path, commands::edge::EdgeCommands::Apply).await,
+            ),
+            4 => break,
             _ => {}
         }
     }

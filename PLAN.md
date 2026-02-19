@@ -13,6 +13,15 @@ Airstack should feel like:
 
 No overreach. No platform bloat. Just clean infra control.
 
+Production Expansion Status (current)
+- ✅ P0 remote deploy safety guard: local deploy blocked when infra exists unless `--allow-local-deploy`
+- ✅ Deployment target abstraction (local vs remote docker host)
+- ✅ Health-gated service deploy with rollback to previous image when healthcheck fails
+- ✅ `airstack plan` and `airstack apply` command surface
+- ✅ Environment overlays via `--env <name>` and `airstack.<name>.toml`
+- ✅ Edge primitive command surface: `edge plan|apply|validate|status` (Caddy-first)
+- ✅ `airstack doctor` policy checks and `airstack runbook` operational guide
+
 Implementation Audit (as of February 19, 2026)
 
 Legend: `✅` done, `✅ (partial)` in progress/partial, `✅ (planned)` not started.

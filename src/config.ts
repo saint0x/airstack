@@ -18,17 +18,36 @@ const ServiceConfigSchema = z.object({
   env: z.record(z.string()).optional(),
   volumes: z.array(z.string()).optional(),
   depends_on: z.array(z.string()).optional(),
+  target_server: z.string().min(1).optional(),
+  healthcheck: z.object({
+    command: z.array(z.string()).min(1),
+    interval_secs: z.number().int().positive().optional(),
+    retries: z.number().int().positive().optional(),
+    timeout_secs: z.number().int().positive().optional(),
+  }).optional(),
+  profile: z.string().optional(),
 });
 
 const AirstackConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
     description: z.string().optional(),
+    deploy_mode: z.enum(['local', 'remote']).optional(),
   }),
   infra: z.object({
     servers: z.array(ServerConfigSchema),
   }).optional(),
   services: z.record(ServiceConfigSchema).optional(),
+  edge: z.object({
+    provider: z.string().min(1),
+    sites: z.array(z.object({
+      host: z.string().min(1),
+      upstream_service: z.string().min(1),
+      upstream_port: z.number().int().positive(),
+      tls_email: z.string().optional(),
+      redirect_http: z.boolean().optional(),
+    })),
+  }).optional(),
 });
 
 export class AirstackConfig {

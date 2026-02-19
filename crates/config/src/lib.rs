@@ -8,12 +8,14 @@ pub struct AirstackConfig {
     pub project: ProjectConfig,
     pub infra: Option<InfraConfig>,
     pub services: Option<HashMap<String, ServiceConfig>>,
+    pub edge: Option<EdgeConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
     pub description: Option<String>,
+    pub deploy_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +40,32 @@ pub struct ServiceConfig {
     pub env: Option<HashMap<String, String>>,
     pub volumes: Option<Vec<String>>,
     pub depends_on: Option<Vec<String>>,
+    pub target_server: Option<String>,
+    pub healthcheck: Option<HealthcheckConfig>,
+    pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthcheckConfig {
+    pub command: Vec<String>,
+    pub interval_secs: Option<u64>,
+    pub retries: Option<u32>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeConfig {
+    pub provider: String,
+    pub sites: Vec<EdgeSiteConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSiteConfig {
+    pub host: String,
+    pub upstream_service: String,
+    pub upstream_port: u16,
+    pub tls_email: Option<String>,
+    pub redirect_http: Option<bool>,
 }
 
 impl AirstackConfig {
@@ -45,8 +73,29 @@ impl AirstackConfig {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
 
-        let config: AirstackConfig =
+        let mut config: AirstackConfig =
             toml::from_str(&content).with_context(|| "Failed to parse TOML configuration")?;
+
+        if let Ok(env_name) = std::env::var("AIRSTACK_ENV") {
+            if !env_name.is_empty() {
+                let base = path.as_ref();
+                let parent = base.parent().unwrap_or_else(|| Path::new("."));
+                let stem = base
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("airstack");
+                let overlay_path = parent.join(format!("{}.{}.toml", stem, env_name));
+                if overlay_path.exists() {
+                    let overlay_content =
+                        std::fs::read_to_string(&overlay_path).with_context(|| {
+                            format!("Failed to read overlay config file: {:?}", overlay_path)
+                        })?;
+                    let overlay: OverlayConfig = toml::from_str(&overlay_content)
+                        .with_context(|| "Failed to parse overlay TOML configuration")?;
+                    config.apply_overlay(overlay);
+                }
+            }
+        }
 
         config.validate()?;
         Ok(config)
@@ -55,6 +104,12 @@ impl AirstackConfig {
     pub fn validate(&self) -> Result<()> {
         if self.project.name.is_empty() {
             anyhow::bail!("Project name cannot be empty");
+        }
+
+        if let Some(mode) = &self.project.deploy_mode {
+            if mode != "local" && mode != "remote" {
+                anyhow::bail!("project.deploy_mode must be 'local' or 'remote'");
+            }
         }
 
         if let Some(infra) = &self.infra {
@@ -76,10 +131,77 @@ impl AirstackConfig {
                 if service.image.is_empty() {
                     anyhow::bail!("Service image cannot be empty for service: {}", name);
                 }
+                if let Some(hc) = &service.healthcheck {
+                    if hc.command.is_empty() {
+                        anyhow::bail!("Healthcheck command cannot be empty for service: {}", name);
+                    }
+                }
+            }
+        }
+
+        if let Some(edge) = &self.edge {
+            if edge.provider.is_empty() {
+                anyhow::bail!("Edge provider cannot be empty");
+            }
+            for site in &edge.sites {
+                if site.host.is_empty() {
+                    anyhow::bail!("Edge site host cannot be empty");
+                }
+                if site.upstream_service.is_empty() {
+                    anyhow::bail!("Edge upstream_service cannot be empty");
+                }
+                if site.upstream_port == 0 {
+                    anyhow::bail!("Edge upstream_port must be > 0");
+                }
             }
         }
 
         Ok(())
+    }
+
+    fn apply_overlay(&mut self, overlay: OverlayConfig) {
+        if let Some(project) = overlay.project {
+            if let Some(name) = project.name {
+                self.project.name = name;
+            }
+            if project.description.is_some() {
+                self.project.description = project.description;
+            }
+            if project.deploy_mode.is_some() {
+                self.project.deploy_mode = project.deploy_mode;
+            }
+        }
+
+        if let Some(infra) = overlay.infra {
+            if let Some(base_infra) = &mut self.infra {
+                for overlay_server in infra.servers {
+                    if let Some(existing) = base_infra
+                        .servers
+                        .iter_mut()
+                        .find(|s| s.name == overlay_server.name)
+                    {
+                        *existing = overlay_server;
+                    } else {
+                        base_infra.servers.push(overlay_server);
+                    }
+                }
+            } else {
+                self.infra = Some(InfraConfig {
+                    servers: infra.servers,
+                });
+            }
+        }
+
+        if let Some(services) = overlay.services {
+            let base_services = self.services.get_or_insert_with(HashMap::new);
+            for (name, svc) in services {
+                base_services.insert(name, svc);
+            }
+        }
+
+        if let Some(edge) = overlay.edge {
+            self.edge = Some(edge);
+        }
     }
 
     pub fn get_config_path() -> Result<std::path::PathBuf> {
@@ -97,6 +219,7 @@ impl AirstackConfig {
         let example_config = r#"[project]
 name = "my-project"
 description = "Example Airstack project"
+deploy_mode = "remote"
 
 [[infra.servers]]
 name = "web-server"
@@ -110,12 +233,23 @@ floating_ip = true
 image = "nginx:latest"
 ports = [80, 443]
 env = { ENVIRONMENT = "production" }
+healthcheck = { command = ["sh", "-lc", "wget -qO- http://127.0.0.1:80 >/dev/null"], interval_secs = 5, retries = 10, timeout_secs = 3 }
 
 [services.database]
 image = "postgres:15"
 ports = [5432]
 env = { POSTGRES_DB = "myapp", POSTGRES_USER = "user", POSTGRES_PASSWORD = "password" }
 volumes = ["./data:/var/lib/postgresql/data"]
+
+[edge]
+provider = "caddy"
+
+[[edge.sites]]
+host = "api.example.com"
+upstream_service = "api"
+upstream_port = 80
+tls_email = "ops@example.com"
+redirect_http = true
 "#;
 
         std::fs::write(&path, example_config)
@@ -123,6 +257,21 @@ volumes = ["./data:/var/lib/postgresql/data"]
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OverlayConfig {
+    project: Option<OverlayProjectConfig>,
+    infra: Option<InfraConfig>,
+    services: Option<HashMap<String, ServiceConfig>>,
+    edge: Option<EdgeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OverlayProjectConfig {
+    name: Option<String>,
+    description: Option<String>,
+    deploy_mode: Option<String>,
 }
 
 #[cfg(test)]
@@ -144,6 +293,7 @@ mod tests {
             project: ProjectConfig {
                 name: "demo".to_string(),
                 description: None,
+                deploy_mode: Some("remote".to_string()),
             },
             infra: Some(InfraConfig {
                 servers: vec![ServerConfig {
@@ -163,8 +313,12 @@ mod tests {
                     env: None,
                     volumes: None,
                     depends_on: None,
+                    target_server: None,
+                    healthcheck: None,
+                    profile: None,
                 },
             )])),
+            edge: None,
         }
     }
 

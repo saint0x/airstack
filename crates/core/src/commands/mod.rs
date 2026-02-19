@@ -1,9 +1,14 @@
+pub mod apply;
 pub mod cexec;
 pub mod cli;
 pub mod deploy;
 pub mod destroy;
+pub mod doctor;
+pub mod edge;
 pub mod init;
 pub mod logs;
+pub mod plan;
+pub mod runbook;
 pub mod scale;
 pub mod ssh;
 pub mod status;

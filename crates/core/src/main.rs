@@ -5,6 +5,7 @@ use tracing_subscriber::FmtSubscriber;
 
 mod commands;
 mod dependencies;
+mod deploy_runtime;
 mod output;
 mod retry;
 mod ssh_utils;
@@ -46,6 +47,20 @@ pub struct Cli {
 
     #[arg(long, global = true, help = "Suppress human-readable output")]
     quiet: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Environment overlay (loads airstack.<env>.toml)"
+    )]
+    env: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Allow local deploys even when infra servers exist"
+    )]
+    allow_local_deploy: bool,
 }
 
 #[derive(Subcommand)]
@@ -123,6 +138,22 @@ enum Commands {
         #[arg(long, help = "Number of lines to show")]
         tail: Option<usize>,
     },
+    #[command(about = "Preview planned infra/service actions")]
+    Plan {
+        #[arg(long, help = "Include destroy actions for unmanaged resources")]
+        include_destroy: bool,
+    },
+    #[command(about = "Apply desired infrastructure and services")]
+    Apply,
+    #[command(about = "Edge reverse-proxy workflows")]
+    Edge {
+        #[command(subcommand)]
+        command: commands::edge::EdgeCommands,
+    },
+    #[command(about = "Run production safety checks")]
+    Doctor,
+    #[command(about = "Print operational runbook for this stack")]
+    Runbook,
 }
 
 #[tokio::main]
@@ -130,6 +161,9 @@ async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
 
     let cli = Cli::parse();
+    if let Some(env_name) = &cli.env {
+        std::env::set_var("AIRSTACK_ENV", env_name);
+    }
     output::configure(cli.json, cli.quiet);
 
     let level = if cli.verbose {
@@ -157,13 +191,20 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { name } => commands::init::run(name, &cli.config).await,
         Commands::Up { target, provider } => {
-            commands::up::run(&cli.config, target, provider, cli.dry_run).await
+            commands::up::run(
+                &cli.config,
+                target,
+                provider,
+                cli.dry_run,
+                cli.allow_local_deploy,
+            )
+            .await
         }
         Commands::Destroy { target, force } => {
             commands::destroy::run(&cli.config, target, force || cli.yes).await
         }
         Commands::Deploy { service, target } => {
-            commands::deploy::run(&cli.config, &service, target).await
+            commands::deploy::run(&cli.config, &service, target, cli.allow_local_deploy).await
         }
         Commands::Cexec {
             server,
@@ -184,5 +225,12 @@ async fn main() -> Result<()> {
             follow,
             tail,
         } => commands::logs::run(&cli.config, &service, follow, tail).await,
+        Commands::Plan { include_destroy } => {
+            commands::plan::run(&cli.config, include_destroy).await
+        }
+        Commands::Apply => commands::apply::run(&cli.config, cli.allow_local_deploy).await,
+        Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
+        Commands::Doctor => commands::doctor::run(&cli.config).await,
+        Commands::Runbook => commands::runbook::run(&cli.config).await,
     }
 }

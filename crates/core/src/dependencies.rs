@@ -92,6 +92,9 @@ mod tests {
             env: None,
             volumes: None,
             depends_on: depends_on.map(|deps| deps.into_iter().map(|d| d.to_string()).collect()),
+            target_server: None,
+            healthcheck: None,
+            profile: None,
         }
     }
 

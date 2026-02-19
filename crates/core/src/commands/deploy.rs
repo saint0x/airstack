@@ -1,12 +1,12 @@
 use crate::dependencies::deployment_order;
+use crate::deploy_runtime::{
+    deploy_service, existing_service_image, resolve_target, rollback_service, run_healthcheck,
+};
 use crate::output;
-use crate::retry::retry_with_backoff;
 use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
-use airstack_container::{get_provider as get_container_provider, RunServiceRequest};
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::time::Duration;
 use tracing::info;
 
 #[derive(Debug, Serialize)]
@@ -24,7 +24,12 @@ struct DeployOutput {
     deployed: Vec<DeployRecord>,
 }
 
-pub async fn run(config_path: &str, service_name: &str, _target: Option<String>) -> Result<()> {
+pub async fn run(
+    config_path: &str,
+    service_name: &str,
+    _target: Option<String>,
+    allow_local_deploy: bool,
+) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
 
@@ -32,16 +37,14 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
 
     let services = config
         .services
+        .as_ref()
         .context("No services defined in configuration")?;
 
     let order = if service_name == "all" {
-        deployment_order(&services, None)?
+        deployment_order(services, None)?
     } else {
-        deployment_order(&services, Some(service_name))?
+        deployment_order(services, Some(service_name))?
     };
-
-    let container_provider =
-        get_container_provider("docker").context("Failed to initialize Docker provider")?;
 
     output::line(format!("🚀 Deploying request: {}", service_name));
 
@@ -57,32 +60,26 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
             deploy_name, service.image, service.ports
         ));
 
-        let request = RunServiceRequest {
-            name: deploy_name.to_string(),
-            image: service.image.clone(),
-            ports: service.ports.clone(),
-            env: service.env.clone(),
-            volumes: service.volumes.clone(),
-            restart_policy: Some("unless-stopped".to_string()),
-        };
+        let runtime_target = resolve_target(&config, service, allow_local_deploy)?;
+        let previous_image = existing_service_image(&runtime_target, deploy_name).await?;
 
-        let container = retry_with_backoff(
-            3,
-            Duration::from_millis(250),
-            &format!("deploy service '{}'", deploy_name),
-            |_| container_provider.run_service(request.clone()),
-        )
-        .await
-        .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
+        let container = deploy_service(&runtime_target, deploy_name, service)
+            .await
+            .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
 
-        let ports = container
-            .ports
-            .iter()
-            .filter_map(|port| {
-                port.host_port
-                    .map(|host_port| format!("localhost:{}->{}", host_port, port.container_port))
-            })
-            .collect::<Vec<_>>();
+        if let Some(hc) = &service.healthcheck {
+            if let Err(err) = run_healthcheck(&runtime_target, deploy_name, hc).await {
+                if let Some(prev) = &previous_image {
+                    let _ = rollback_service(&runtime_target, deploy_name, prev, service).await;
+                }
+                return Err(err).with_context(|| {
+                    format!(
+                        "Healthcheck gate failed for service '{}' (rolled back if possible)",
+                        deploy_name
+                    )
+                });
+            }
+        }
 
         output::line(format!(
             "✅ Successfully deployed service: {} ({})",
@@ -92,8 +89,8 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
         deployed.push(DeployRecord {
             service: deploy_name.to_string(),
             container_id: container.id.clone(),
-            status: format!("{:?}", container.status),
-            ports,
+            status: container.status.clone(),
+            ports: container.ports.clone(),
         });
 
         state.services.insert(
@@ -102,8 +99,8 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
                 image: service.image.clone(),
                 replicas: 1,
                 containers: vec![deploy_name.to_string()],
-                health: map_container_health(container.status.clone()),
-                last_status: Some(format!("{:?}", container.status)),
+                health: map_container_health_text(&container.status),
+                last_status: Some(container.status.clone()),
                 last_checked_unix: unix_now(),
                 last_error: None,
             },
@@ -128,17 +125,14 @@ pub async fn run(config_path: &str, service_name: &str, _target: Option<String>)
     Ok(())
 }
 
-fn map_container_health(status: airstack_container::ContainerStatus) -> HealthState {
-    use airstack_container::ContainerStatus;
-
-    match status {
-        ContainerStatus::Running => HealthState::Healthy,
-        ContainerStatus::Creating | ContainerStatus::Restarting => HealthState::Degraded,
-        ContainerStatus::Stopped
-        | ContainerStatus::Paused
-        | ContainerStatus::Removing
-        | ContainerStatus::Dead
-        | ContainerStatus::Exited => HealthState::Unhealthy,
+fn map_container_health_text(status: &str) -> HealthState {
+    let s = status.to_ascii_lowercase();
+    if s.contains("up") || s.contains("running") {
+        HealthState::Healthy
+    } else if s.contains("restart") || s.contains("start") {
+        HealthState::Degraded
+    } else {
+        HealthState::Unhealthy
     }
 }
 

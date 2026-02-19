@@ -93,11 +93,18 @@ airstack status
 | `airstack status` | Show status |
 | `airstack ssh <server>` | SSH into a server |
 | `airstack logs <service>` | Show service logs |
+| `airstack plan` | Preview create/update/destroy and deploy actions |
+| `airstack apply` | Apply desired infrastructure and services |
+| `airstack edge <plan|apply|validate|status>` | Reverse-proxy workflows |
+| `airstack doctor` | Validate production safety and policy checks |
+| `airstack runbook` | Print operational command runbook |
 
 ### Output Modes
 
 - `--json`: machine-readable structured output
 - `--quiet`: suppress human-readable output
+- `--env <name>`: load environment overlay from `airstack.<name>.toml`
+- `--allow-local-deploy`: bypass remote-first deploy guard when infra exists
 
 ### TUI Runtime (FrankenTUI)
 
@@ -172,6 +179,7 @@ Currently supported:
 [project]
 name = "production-app"
 description = "Production deployment"
+deploy_mode = "remote"
 
 # Multiple servers
 [[infra.servers]]
@@ -213,6 +221,16 @@ image = "myapp/frontend:v1.2.0"
 ports = [80, 443]
 depends_on = ["api"]
 env = { API_URL = "http://api:3000" }
+
+[edge]
+provider = "caddy"
+
+[[edge.sites]]
+host = "api.example.com"
+upstream_service = "frontend"
+upstream_port = 80
+tls_email = "ops@example.com"
+redirect_http = true
 ```
 
 ## Development
