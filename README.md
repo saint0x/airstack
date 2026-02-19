@@ -114,6 +114,14 @@ airstack status
 - `--env <name>`: load environment overlay from `airstack.<name>.toml`
 - `--allow-local-deploy`: bypass remote-first deploy guard when infra exists
 
+### Fozzy Gate
+
+Run the production Fozzy suite (deterministic checks + host-backed CLI quality gate):
+
+```bash
+./scripts/fozzy-suite.sh
+```
+
 ### TUI Runtime (FrankenTUI)
 
 Airstack integrates [FrankenTUI](https://github.com/Dicklesworthstone/frankentui) as an optional Rust feature.

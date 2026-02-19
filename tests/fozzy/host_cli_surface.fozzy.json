@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "name": "host_cli_surface",
+  "steps": [
+    { "type": "trace_event", "name": "suite_start", "fields": { "domain": "airstack-cli" } },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "--help"],
+      "expect_exit": 0,
+      "save_stdout_as": "root_help"
+    },
+    { "type": "get_kv_assert", "key": "root_help" },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "deploy", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "ship", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "edge", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "status", "--help"],
+      "expect_exit": 0
+    },
+    { "type": "assert_ok", "value": true, "msg": "core CLI command surfaces compile and execute" }
+  ]
+}

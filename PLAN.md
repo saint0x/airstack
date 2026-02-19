@@ -35,6 +35,7 @@ Production Expansion Status (current)
 - ✅ Status source-of-truth modes (`--source auto|provider|ssh|control-plane`) + mismatch note
 - ✅ Idempotent reconcile command (`reconcile`)
 - ✅ Blue/green + canary deploy strategy primitive (`deploy/ship --strategy ...`)
+- ✅ Expanded Fozzy production gate (`scripts/fozzy-suite.sh` + host-backed scenarios + trace CI checks)
 
 Implementation Audit (as of February 19, 2026)
 

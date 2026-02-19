@@ -234,29 +234,70 @@ pub async fn apply_from_config(config: &AirstackConfig) -> Result<()> {
         .context("Edge apply requires at least one server")?;
 
     let caddyfile = render_caddyfile(&edge.sites);
-    let escaped = caddyfile.replace('\\', "\\\\").replace('"', "\\\"");
     let upload_script = format!(
-        "set -e; \
-target=\"\"; \
-for p in /opt/aria/Caddyfile /etc/caddy/Caddyfile; do [ -e \"$p\" ] && target=\"$p\" && break; done; \
-if [ -z \"$target\" ]; then \
-  if [ -d /opt/aria ]; then target=/opt/aria/Caddyfile; \
-  elif [ -d /etc/caddy ]; then target=/etc/caddy/Caddyfile; \
-  else mkdir -p /etc/caddy; target=/etc/caddy/Caddyfile; fi; \
-fi; \
-mkdir -p \"$(dirname \"$target\")\"; \
-cat > \"$target\" <<'CADDY'\n{caddy}\nCADDY\n\
-if [ \"$target\" = \"/etc/caddy/Caddyfile\" ] && command -v caddy >/dev/null 2>&1; then \
-  caddy validate --config \"$target\"; \
-  if command -v systemctl >/dev/null 2>&1; then systemctl reload caddy || true; fi; \
-fi; \
-if command -v docker >/dev/null 2>&1; then \
-  if docker ps --format '{{{{.Names}}}}' | grep -qx caddy; then \
-    docker exec caddy sh -lc \"printf '%s' \\\"{escaped}\\\" > /etc/caddy/Caddyfile && caddy validate --config /etc/caddy/Caddyfile\"; \
-    docker restart caddy >/dev/null 2>&1 || true; \
-  fi; \
-fi; \
-echo \"$target\"",
+        r#"set -e
+tmp="$(mktemp /tmp/airstack-caddy.XXXXXX)"
+cat > "$tmp" <<'CADDY'
+{caddy}
+CADDY
+
+container_id=""
+if command -v docker >/dev/null 2>&1; then
+  container_id="$(docker ps -aqf 'name=^/caddy$' | head -n1 || true)"
+fi
+
+target=""
+if [ -n "$container_id" ]; then
+  mount_source="$(docker inspect -f '{{{{range .Mounts}}}}{{{{if eq .Destination "/etc/caddy/Caddyfile"}}}}{{{{.Source}}}}{{{{end}}}}{{{{end}}}}' caddy 2>/dev/null || true)"
+  if [ -n "$mount_source" ]; then
+    target="$mount_source"
+  fi
+fi
+
+if [ -z "$target" ]; then
+  for p in /opt/aria/Caddyfile /etc/caddy/Caddyfile; do
+    if [ -e "$p" ]; then
+      target="$p"
+      break
+    fi
+  done
+fi
+
+host_write_ok=0
+if [ -n "$target" ]; then
+  mkdir -p "$(dirname "$target")" 2>/dev/null || true
+  if cp "$tmp" "$target" 2>/dev/null; then
+    host_write_ok=1
+  fi
+fi
+
+if [ "$host_write_ok" -eq 0 ] && [ -n "$container_id" ]; then
+  docker cp "$tmp" caddy:/etc/caddy/Caddyfile
+  docker exec caddy sh -lc 'caddy validate --config /etc/caddy/Caddyfile' || true
+  docker restart caddy >/dev/null 2>&1 || true
+  echo "container:/etc/caddy/Caddyfile"
+  rm -f "$tmp"
+  exit 0
+fi
+
+if [ "$host_write_ok" -eq 1 ]; then
+  if [ -n "$container_id" ]; then
+    docker restart caddy >/dev/null 2>&1 || true
+  elif command -v caddy >/dev/null 2>&1; then
+    caddy validate --config "$target"
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl reload caddy || true
+    fi
+  fi
+  echo "$target"
+  rm -f "$tmp"
+  exit 0
+fi
+
+echo "failed to write Caddyfile (host path not writable and no caddy container fallback)" >&2
+rm -f "$tmp"
+exit 1
+"#,
         caddy = caddyfile
     );
 

@@ -58,20 +58,6 @@ struct StatusOutput {
 }
 
 #[derive(Debug, Deserialize)]
-struct DockerPsLine {
-    #[serde(rename = "ID")]
-    id: Option<String>,
-    #[serde(rename = "Image")]
-    image: Option<String>,
-    #[serde(rename = "Names")]
-    names: Option<String>,
-    #[serde(rename = "Status")]
-    status: Option<String>,
-    #[serde(rename = "Ports")]
-    ports: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 struct FlyMachineStatusLine {
     id: String,
     name: Option<String>,
@@ -628,10 +614,10 @@ async fn inspect_remote_containers_for_server(
     server_cfg: &ServerConfig,
 ) -> Result<Vec<RemoteContainerRecord>> {
     let scripts = [
-        "docker ps --format '{{json .}}'",
-        "sudo -n docker ps --format '{{json .}}'",
-        "podman ps --format '{{json .}}'",
-        "sudo -n podman ps --format '{{json .}}'",
+        "docker ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "sudo -n docker ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "podman ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "sudo -n podman ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
     ];
 
     let mut last_err = String::new();
@@ -662,24 +648,23 @@ fn parse_remote_container_lines(
     let stdout = String::from_utf8_lossy(stdout);
     let mut items = Vec::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let parsed: DockerPsLine = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(
-                    "Skipping unparsable docker ps line for {}: {} ({})",
-                    server_cfg.name, line, e
-                );
-                continue;
-            }
-        };
+        let parts = line.splitn(5, '\t').collect::<Vec<_>>();
+        if parts.len() < 4 {
+            warn!(
+                "Skipping unparsable container line for {}: {}",
+                server_cfg.name, line
+            );
+            continue;
+        }
         items.push(RemoteContainerRecord {
             server: server_cfg.name.clone(),
-            name: parsed.names.unwrap_or_default(),
-            id: parsed.id.unwrap_or_default(),
-            image: parsed.image.unwrap_or_default(),
-            status: parsed.status.unwrap_or_else(|| "Unknown".to_string()),
-            ports: parsed
-                .ports
+            id: parts[0].trim().to_string(),
+            image: parts[1].trim().to_string(),
+            name: parts[2].trim().to_string(),
+            status: parts[3].trim().to_string(),
+            ports: parts
+                .get(4)
+                .map(|p| p.trim().to_string())
                 .filter(|p| !p.is_empty())
                 .map(|p| vec![p])
                 .unwrap_or_default(),

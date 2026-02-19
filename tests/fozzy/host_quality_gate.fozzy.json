@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "host_quality_gate",
+  "steps": [
+    { "type": "trace_event", "name": "suite_start", "fields": { "domain": "quality-gate" } },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["check", "-p", "airstack-core"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["test", "-p", "airstack-core"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "bun",
+      "args": ["test"],
+      "expect_exit": 0
+    },
+    { "type": "assert_ok", "value": true, "msg": "core quality gate passes" }
+  ]
+}
