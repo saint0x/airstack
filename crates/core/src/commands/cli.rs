@@ -2,38 +2,39 @@ use crate::commands;
 use crate::output;
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
-use crossterm::cursor;
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::execute;
-use crossterm::terminal::{self, ClearType};
-use std::io::{self, Write};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 
 pub async fn run(config_path: &str) -> Result<()> {
     if output::is_json() {
         anyhow::bail!("Interactive CLI mode cannot be used with --json");
     }
 
+    let theme = ColorfulTheme::default();
+
     loop {
         let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
         let server_names = sorted_servers(&config);
         let service_names = sorted_services(&config);
 
-        let choices = vec![
-            "Infrastructure".to_string(),
-            "Services".to_string(),
-            "SSH & Containers".to_string(),
-            "Quick Status".to_string(),
-            "Exit".to_string(),
-        ];
-
         let title = format!("Airstack CLI ({})", config.project.name);
-        let selected = select_interactive(&title, &choices, false)?;
-        match selected {
-            Some(0) => infrastructure_menu(config_path).await?,
-            Some(1) => services_menu(config_path, &service_names).await?,
-            Some(2) => remote_menu(config_path, &server_names, &service_names).await?,
-            Some(3) => run_and_continue(commands::status::run(config_path, false).await),
-            Some(4) | None => break,
+        let choice = select_index(
+            &theme,
+            &title,
+            &[
+                "Infrastructure",
+                "Services",
+                "SSH & Containers",
+                "Quick Status",
+                "Exit",
+            ],
+        )?;
+
+        match choice {
+            0 => infrastructure_menu(&theme, config_path).await?,
+            1 => services_menu(&theme, config_path, &service_names).await?,
+            2 => remote_menu(&theme, config_path, &server_names, &service_names).await?,
+            3 => run_and_continue(commands::status::run(config_path, false).await),
+            4 => break,
             _ => {}
         }
     }
@@ -41,130 +42,218 @@ pub async fn run(config_path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn infrastructure_menu(config_path: &str) -> Result<()> {
-    let choices = vec![
-        "Status".to_string(),
-        "Status (Detailed)".to_string(),
-        "Up".to_string(),
-        "Destroy".to_string(),
-        "Back".to_string(),
-    ];
-
+async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
     loop {
-        match select_interactive("Infrastructure", &choices, true)? {
-            Some(0) => run_and_continue(commands::status::run(config_path, false).await),
-            Some(1) => run_and_continue(commands::status::run(config_path, true).await),
-            Some(2) => {
-                let provider = read_optional("Provider (blank = config default)")?;
-                let target = read_optional("Target env (blank = default)")?;
+        let choice = select_index(
+            theme,
+            "Infrastructure",
+            &["Status", "Status (Detailed)", "Up", "Destroy", "Back"],
+        )?;
+        match choice {
+            0 => run_and_continue(commands::status::run(config_path, false).await),
+            1 => run_and_continue(commands::status::run(config_path, true).await),
+            2 => {
+                let provider = read_optional(theme, "Provider (blank = config default)")?;
+                let target = read_optional(theme, "Target env (blank = default)")?;
                 run_and_continue(commands::up::run(config_path, target, provider, false).await);
             }
-            Some(3) => {
-                if confirm("Destroy infrastructure? This is destructive", false)? {
-                    let target = read_optional("Target env (blank = default)")?;
+            3 => {
+                let confirmed = Confirm::with_theme(theme)
+                    .with_prompt("Destroy infrastructure? This is destructive")
+                    .default(false)
+                    .interact()
+                    .context("Failed to read confirmation")?;
+                if confirmed {
+                    let target = read_optional(theme, "Target env (blank = default)")?;
                     run_and_continue(commands::destroy::run(config_path, target, true).await);
                 }
             }
-            Some(4) | None => break,
+            4 => break,
             _ => {}
         }
     }
-
     Ok(())
 }
 
-async fn services_menu(config_path: &str, service_names: &[String]) -> Result<()> {
-    let choices = vec![
-        "Deploy".to_string(),
-        "Scale".to_string(),
-        "Logs".to_string(),
-        "Back".to_string(),
-    ];
-
+async fn services_menu(
+    theme: &ColorfulTheme,
+    config_path: &str,
+    service_names: &[String],
+) -> Result<()> {
     loop {
-        match select_interactive("Services", &choices, true)? {
-            Some(0) => {
-                let deploy_target = select_with_extra(
-                    "Select service to deploy",
-                    service_names,
-                    Some("all".to_string()),
-                    "all",
-                )?;
-                if let Some(service) = deploy_target {
-                    run_and_continue(commands::deploy::run(config_path, &service, None).await);
+        let choice = select_index(theme, "Services", &["Deploy", "Scale", "Logs", "Back"])?;
+        match choice {
+            0 => {
+                let mut options = service_names.to_vec();
+                options.push("all".to_string());
+                options.push("Back".to_string());
+                if let Some(selected) =
+                    select_from_list(theme, "Select service to deploy", &options)?
+                {
+                    if selected != "Back" {
+                        run_and_continue(commands::deploy::run(config_path, &selected, None).await);
+                    }
                 }
             }
-            Some(1) => {
-                if let Some(service) = select_from_list("Select service to scale", service_names)? {
-                    let replicas = prompt_usize("Replica count", Some(1))?;
+            1 => {
+                if let Some(service) =
+                    select_from_list_with_back(theme, "Select service to scale", service_names)?
+                {
+                    let replicas: usize = Input::with_theme(theme)
+                        .with_prompt("Replica count")
+                        .default(1)
+                        .interact_text()
+                        .context("Failed to read replica count")?;
                     run_and_continue(commands::scale::run(config_path, &service, replicas).await);
                 }
             }
-            Some(2) => {
-                if let Some(service) = select_from_list("Select service logs", service_names)? {
-                    let follow = confirm("Follow logs", false)?;
-                    let tail = prompt_optional_usize("Tail lines (blank = full)")?;
+            2 => {
+                if let Some(service) =
+                    select_from_list_with_back(theme, "Select service logs", service_names)?
+                {
+                    let follow = Confirm::with_theme(theme)
+                        .with_prompt("Follow logs")
+                        .default(false)
+                        .interact()
+                        .context("Failed to read follow option")?;
+                    let tail = read_optional_usize(theme, "Tail lines (blank = full)")?;
                     run_and_continue(
                         commands::logs::run(config_path, &service, follow, tail).await,
                     );
                 }
             }
-            Some(3) | None => break,
+            3 => break,
             _ => {}
         }
     }
-
     Ok(())
 }
 
 async fn remote_menu(
+    theme: &ColorfulTheme,
     config_path: &str,
     server_names: &[String],
     service_names: &[String],
 ) -> Result<()> {
-    let choices = vec![
-        "SSH".to_string(),
-        "Container Exec".to_string(),
-        "Back".to_string(),
-    ];
-
     loop {
-        match select_interactive("SSH & Containers", &choices, true)? {
-            Some(0) => {
-                if let Some(server) = select_from_list("Select server", server_names)? {
-                    let cmd = read_optional("SSH command (blank = interactive shell)")?;
-                    let command = split_command(cmd);
-                    run_and_continue(commands::ssh::run(config_path, &server, command).await);
+        let choice = select_index(
+            theme,
+            "SSH & Containers",
+            &["SSH", "Container Exec", "Back"],
+        )?;
+        match choice {
+            0 => {
+                if let Some(server) =
+                    select_from_list_with_back(theme, "Select server", server_names)?
+                {
+                    let cmd = read_optional(theme, "SSH command (blank = interactive shell)")?;
+                    run_and_continue(
+                        commands::ssh::run(config_path, &server, split_command(cmd)).await,
+                    );
                 }
             }
-            Some(1) => {
-                if let Some(server) = select_from_list("Select server", server_names)? {
-                    let container = select_with_extra(
-                        "Container",
-                        service_names,
-                        Some("manual".to_string()),
-                        "manual entry",
-                    )?;
-                    let container = match container {
-                        Some(c) if c == "manual" => read_required("Container name")?,
-                        Some(c) => c,
+            1 => {
+                if let Some(server) =
+                    select_from_list_with_back(theme, "Select server", server_names)?
+                {
+                    let mut containers = service_names.to_vec();
+                    containers.push("manual entry".to_string());
+                    containers.push("Back".to_string());
+                    let selected = match select_from_list(theme, "Container", &containers)? {
+                        Some(v) if v == "Back" => continue,
+                        Some(v) if v == "manual entry" => read_required(theme, "Container name")?,
+                        Some(v) => v,
                         None => continue,
                     };
-                    let cmd = read_optional(
-                        "Container command (blank = interactive shell in container)",
-                    )?;
+                    let cmd =
+                        read_optional(theme, "Container command (blank = interactive shell)")?;
                     run_and_continue(
-                        commands::cexec::run(config_path, &server, &container, split_command(cmd))
+                        commands::cexec::run(config_path, &server, &selected, split_command(cmd))
                             .await,
                     );
                 }
             }
-            Some(2) | None => break,
+            2 => break,
             _ => {}
         }
     }
-
     Ok(())
+}
+
+fn select_index(theme: &ColorfulTheme, prompt: &str, options: &[&str]) -> Result<usize> {
+    Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(options)
+        .default(0)
+        .interact()
+        .context("Failed to select menu option")
+}
+
+fn select_from_list(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    options: &[String],
+) -> Result<Option<String>> {
+    if options.is_empty() {
+        output::subtle_line(format!("{prompt}: no entries available"));
+        return Ok(None);
+    }
+    let index = Select::with_theme(theme)
+        .with_prompt(prompt)
+        .items(options)
+        .default(0)
+        .interact()
+        .context("Failed to select option")?;
+    Ok(options.get(index).cloned())
+}
+
+fn select_from_list_with_back(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    options: &[String],
+) -> Result<Option<String>> {
+    let mut items = options.to_vec();
+    items.push("Back".to_string());
+    match select_from_list(theme, prompt, &items)? {
+        Some(v) if v == "Back" => Ok(None),
+        other => Ok(other),
+    }
+}
+
+fn read_required(theme: &ColorfulTheme, prompt: &str) -> Result<String> {
+    let value: String = Input::with_theme(theme)
+        .with_prompt(prompt)
+        .allow_empty(false)
+        .interact_text()
+        .context("Failed to read input")?;
+    Ok(value.trim().to_string())
+}
+
+fn read_optional(theme: &ColorfulTheme, prompt: &str) -> Result<Option<String>> {
+    let value: String = Input::with_theme(theme)
+        .with_prompt(prompt)
+        .allow_empty(true)
+        .interact_text()
+        .context("Failed to read input")?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value.to_string()))
+    }
+}
+
+fn read_optional_usize(theme: &ColorfulTheme, prompt: &str) -> Result<Option<usize>> {
+    let value = read_optional(theme, prompt)?;
+    match value {
+        Some(v) => {
+            let parsed = v
+                .parse::<usize>()
+                .context("Please enter a valid positive integer")?;
+            Ok(Some(parsed))
+        }
+        None => Ok(None),
+    }
 }
 
 fn sorted_servers(config: &AirstackConfig) -> Vec<String> {
@@ -193,174 +282,6 @@ fn run_and_continue(result: Result<()>) {
     }
 }
 
-fn select_from_list(title: &str, values: &[String]) -> Result<Option<String>> {
-    select_with_extra(title, values, None, "")
-}
-
-fn select_with_extra(
-    title: &str,
-    values: &[String],
-    extra_value: Option<String>,
-    extra_label: &str,
-) -> Result<Option<String>> {
-    if values.is_empty() && extra_value.is_none() {
-        output::subtle_line(format!("{title}: no entries available"));
-        return Ok(None);
-    }
-
-    let mut options = values.to_vec();
-    if extra_value.is_some() {
-        options.push(extra_label.to_string());
-    }
-    options.push("Back".to_string());
-
-    match select_interactive(title, &options, true)? {
-        Some(index) if index < values.len() => Ok(Some(values[index].clone())),
-        Some(index) if extra_value.is_some() && index == values.len() => Ok(extra_value),
-        _ => Ok(None),
-    }
-}
-
-fn select_interactive(title: &str, options: &[String], allow_back: bool) -> Result<Option<usize>> {
-    let _raw = RawModeGuard::new()?;
-    let mut index = 0usize;
-
-    loop {
-        render_menu(title, options, index, allow_back)?;
-
-        if let Event::Key(key) = event::read().context("Failed to read keyboard input")? {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    index = if index == 0 {
-                        options.len().saturating_sub(1)
-                    } else {
-                        index - 1
-                    };
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    index = (index + 1) % options.len().max(1);
-                }
-                KeyCode::Enter | KeyCode::Right => return Ok(Some(index)),
-                KeyCode::Esc | KeyCode::Left | KeyCode::Char('q') if allow_back => return Ok(None),
-                _ => {}
-            }
-        }
-    }
-}
-
-fn render_menu(title: &str, options: &[String], selected: usize, allow_back: bool) -> Result<()> {
-    let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        terminal::Clear(ClearType::All),
-        cursor::MoveTo(0, 0)
-    )
-    .context("Failed to render menu")?;
-
-    let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
-    println!("{}", fit_line(title, width));
-    let controls = if allow_back {
-        "Up/Down move | Right/Enter select | Left/Esc back"
-    } else {
-        "Up/Down move | Right/Enter select"
-    };
-    println!("{}", fit_line(controls, width));
-    println!();
-
-    for (idx, option) in options.iter().enumerate() {
-        if idx == selected {
-            println!("{}", fit_line(format!("> {}", option), width));
-        } else {
-            println!("{}", fit_line(format!("  {}", option), width));
-        }
-    }
-
-    stdout.flush().context("Failed to flush menu output")
-}
-
-fn fit_line(line: impl AsRef<str>, width: usize) -> String {
-    let max = width.saturating_sub(1).max(1);
-    line.as_ref().chars().take(max).collect()
-}
-
-fn confirm(prompt: &str, default: bool) -> Result<bool> {
-    let suffix = if default { "[Y/n]" } else { "[y/N]" };
-    loop {
-        let input = read_line(&format!("{prompt} {suffix}: "))?;
-        let trimmed = input.trim().to_ascii_lowercase();
-        if trimmed.is_empty() {
-            return Ok(default);
-        }
-        match trimmed.as_str() {
-            "y" | "yes" => return Ok(true),
-            "n" | "no" => return Ok(false),
-            _ => output::error_line("Please answer y or n."),
-        }
-    }
-}
-
-fn prompt_usize(prompt: &str, default: Option<usize>) -> Result<usize> {
-    loop {
-        let suffix = default.map(|d| format!(" [{d}]")).unwrap_or_default();
-        let input = read_line(&format!("{prompt}{suffix}: "))?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            if let Some(d) = default {
-                return Ok(d);
-            }
-        } else if let Ok(v) = trimmed.parse::<usize>() {
-            if v > 0 {
-                return Ok(v);
-            }
-        }
-        output::error_line("Please enter a positive integer.");
-    }
-}
-
-fn prompt_optional_usize(prompt: &str) -> Result<Option<usize>> {
-    loop {
-        let input = read_line(&format!("{prompt}: "))?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
-        }
-        if let Ok(v) = trimmed.parse::<usize>() {
-            return Ok(Some(v));
-        }
-        output::error_line("Please enter a valid integer or leave blank.");
-    }
-}
-
-fn read_required(prompt: &str) -> Result<String> {
-    loop {
-        let value = read_line(&format!("{prompt}: "))?;
-        if !value.trim().is_empty() {
-            return Ok(value.trim().to_string());
-        }
-        output::error_line("Input cannot be empty.");
-    }
-}
-
-fn read_optional(prompt: &str) -> Result<Option<String>> {
-    let value = read_line(&format!("{prompt}: "))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(trimmed.to_string()))
-    }
-}
-
-fn read_line(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    io::stdout().flush().context("Failed to flush stdout")?;
-    let mut buf = String::new();
-    io::stdin()
-        .read_line(&mut buf)
-        .context("Failed to read stdin")?;
-    Ok(buf)
-}
-
 fn split_command(command: Option<String>) -> Vec<String> {
     command
         .unwrap_or_default()
@@ -368,21 +289,6 @@ fn split_command(command: Option<String>) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
-}
-
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn new() -> Result<Self> {
-        terminal::enable_raw_mode().context("Failed to enable raw mode")?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-    }
 }
 
 #[cfg(test)]
