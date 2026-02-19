@@ -3,18 +3,18 @@ name = "airstack-example"
 description = "Example Airstack project configuration"
 
 [[infra.servers]]
-name = "web-server"
+name = "ubuntu-8gb-hel1-1"
 provider = "hetzner"
-region = "nbg1"
-server_type = "cx21"
+region = "hel1"
+server_type = "cpx32"
 ssh_key = "~/.ssh/id_ed25519.pub"
-floating_ip = true
+floating_ip = false
 
 [[infra.servers]]
-name = "db-server"
+name = "remyy"
 provider = "hetzner"
-region = "nbg1"
-server_type = "cx31"
+region = "ash"
+server_type = "cpx11"
 ssh_key = "~/.ssh/id_ed25519.pub"
 floating_ip = false
 

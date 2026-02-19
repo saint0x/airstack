@@ -114,6 +114,8 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = dotenvy::dotenv();
+
     let cli = Cli::parse();
     output::configure(cli.json, cli.quiet);
 
