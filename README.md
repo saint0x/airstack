@@ -86,6 +86,7 @@ airstack status
 | `airstack up` | Provision infrastructure |
 | `airstack destroy` | Destroy infrastructure |
 | `airstack deploy <service>` | Deploy a service |
+| `airstack cexec <server> <container> [cmd...]` | Execute a command inside a remote container |
 | `airstack scale <service> <replicas>` | Scale service replicas |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack status` | Show status |

@@ -1,9 +1,11 @@
-use airstack_config::AirstackConfig;
+use airstack_config::{AirstackConfig, ServerConfig};
 use airstack_container::get_provider as get_container_provider;
 use airstack_metal::get_provider as get_metal_provider;
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Command;
 use tracing::{info, warn};
 
 use crate::output;
@@ -33,13 +35,38 @@ struct ServiceStatusRecord {
     note: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RemoteContainerRecord {
+    server: String,
+    name: String,
+    id: String,
+    image: String,
+    status: String,
+    ports: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct StatusOutput {
     project: String,
     description: Option<String>,
     infrastructure: Vec<ServerStatusRecord>,
     services: Vec<ServiceStatusRecord>,
+    remote_containers: Vec<RemoteContainerRecord>,
     drift: DriftReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct DockerPsLine {
+    #[serde(rename = "ID")]
+    id: Option<String>,
+    #[serde(rename = "Image")]
+    image: Option<String>,
+    #[serde(rename = "Names")]
+    names: Option<String>,
+    #[serde(rename = "Status")]
+    status: Option<String>,
+    #[serde(rename = "Ports")]
+    ports: Option<String>,
 }
 
 pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
@@ -51,6 +78,7 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 
     let mut infra_records = Vec::new();
     let mut service_records = Vec::new();
+    let mut server_ips: HashMap<String, String> = HashMap::new();
 
     if !output::is_json() {
         output::line("📊 Airstack Status Report");
@@ -75,6 +103,10 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                             let status_text = format!("{:?}", found_server.status);
                             let cached_health = map_server_health(found_server.status.clone());
                             let checked_at = unix_now();
+
+                            if let Some(ip) = &found_server.public_ip {
+                                server_ips.insert(server.name.clone(), ip.clone());
+                            }
 
                             state.servers.insert(
                                 server.name.clone(),
@@ -113,11 +145,6 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                                         found_server.server_type
                                     ));
                                     output::line(format!("      Region: {}", found_server.region));
-                                    output::line(format!(
-                                        "      Cached health: {} @ {}",
-                                        cached_health.as_str(),
-                                        checked_at
-                                    ));
                                 }
                             }
 
@@ -166,17 +193,15 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                     Err(e) => {
                         warn!("Failed to check server {}: {}", server.name, e);
                         let checked_at = unix_now();
-                        let prev_id = state.servers.get(&server.name).and_then(|s| s.id.clone());
-                        let prev_ip = state
-                            .servers
-                            .get(&server.name)
-                            .and_then(|s| s.public_ip.clone());
                         state.servers.insert(
                             server.name.clone(),
                             ServerState {
                                 provider: server.provider.clone(),
-                                id: prev_id,
-                                public_ip: prev_ip,
+                                id: state.servers.get(&server.name).and_then(|s| s.id.clone()),
+                                public_ip: state
+                                    .servers
+                                    .get(&server.name)
+                                    .and_then(|s| s.public_ip.clone()),
                                 health: HealthState::Unhealthy,
                                 last_status: Some("Error".to_string()),
                                 last_checked_unix: checked_at,
@@ -184,9 +209,6 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                             },
                         );
 
-                        if !output::is_json() {
-                            output::line(format!("   ❌ {} (error checking status)", server.name));
-                        }
                         infra_records.push(ServerStatusRecord {
                             name: server.name.clone(),
                             status: "Error".to_string(),
@@ -203,27 +225,6 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                 Err(e) => {
                     warn!("Failed to initialize provider for {}: {}", server.name, e);
                     let checked_at = unix_now();
-                    let prev_id = state.servers.get(&server.name).and_then(|s| s.id.clone());
-                    let prev_ip = state
-                        .servers
-                        .get(&server.name)
-                        .and_then(|s| s.public_ip.clone());
-                    state.servers.insert(
-                        server.name.clone(),
-                        ServerState {
-                            provider: server.provider.clone(),
-                            id: prev_id,
-                            public_ip: prev_ip,
-                            health: HealthState::Unhealthy,
-                            last_status: Some("ProviderError".to_string()),
-                            last_checked_unix: checked_at,
-                            last_error: Some(format!("provider error: {}", e)),
-                        },
-                    );
-
-                    if !output::is_json() {
-                        output::line(format!("   ❌ {} (provider error)", server.name));
-                    }
                     infra_records.push(ServerStatusRecord {
                         name: server.name.clone(),
                         status: "ProviderError".to_string(),
@@ -244,79 +245,109 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
         }
     }
 
+    let mut remote_containers = Vec::new();
+    if let Some(infra) = &config.infra {
+        for server_cfg in &infra.servers {
+            if let Some(ip) = server_ips.get(&server_cfg.name) {
+                match inspect_remote_containers_for_server(server_cfg, ip) {
+                    Ok(mut containers) => remote_containers.append(&mut containers),
+                    Err(e) => {
+                        warn!(
+                            "Remote container inventory failed for {} ({}): {}",
+                            server_cfg.name, ip, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(services) = &config.services {
         if !output::is_json() {
             output::line("🚀 Services Status:");
         }
 
-        match get_container_provider("docker") {
-            Ok(container_provider) => {
-                for (service_name, service_config) in services {
-                    match container_provider.get_container(service_name).await {
-                        Ok(container) => {
-                            let status_text = format!("{:?}", container.status);
-                            let cached_health = map_container_health(container.status.clone());
-                            let checked_at = unix_now();
-                            let replicas = state
-                                .services
-                                .get(service_name)
-                                .map(|s| s.replicas)
-                                .unwrap_or(1);
-                            let containers = state
-                                .services
-                                .get(service_name)
-                                .map(|s| s.containers.clone())
-                                .unwrap_or_else(|| vec![service_name.clone()]);
+        let local_container_provider = get_container_provider("docker").ok();
 
-                            state.services.insert(
-                                service_name.clone(),
-                                ServiceState {
-                                    image: container.image.clone(),
-                                    replicas,
-                                    containers,
-                                    health: cached_health,
-                                    last_status: Some(status_text.clone()),
-                                    last_checked_unix: checked_at,
-                                    last_error: None,
-                                },
-                            );
+        for (service_name, service_config) in services {
+            if let Some(remote) = remote_containers.iter().find(|c| c.name == *service_name) {
+                let checked_at = unix_now();
+                let health = map_remote_container_health(&remote.status);
+                state.services.insert(
+                    service_name.clone(),
+                    ServiceState {
+                        image: remote.image.clone(),
+                        replicas: 1,
+                        containers: vec![remote.name.clone()],
+                        health,
+                        last_status: Some(remote.status.clone()),
+                        last_checked_unix: checked_at,
+                        last_error: None,
+                    },
+                );
 
-                            if !output::is_json() {
-                                let status_icon = match container.status {
-                                    airstack_container::ContainerStatus::Running => "✅",
-                                    airstack_container::ContainerStatus::Creating => "🔄",
-                                    airstack_container::ContainerStatus::Stopped => "⏹️",
-                                    airstack_container::ContainerStatus::Exited => "💀",
-                                    airstack_container::ContainerStatus::Restarting => "🔄",
-                                    _ => "❓",
-                                };
-                                output::line(format!(
-                                    "   {} {} ({})",
-                                    status_icon, service_name, status_text
-                                ));
+                if !output::is_json() {
+                    output::line(format!(
+                        "   ✅ {} (remote: {} on {})",
+                        service_name, remote.status, remote.server
+                    ));
+                    if detailed {
+                        output::line(format!("      Image: {}", remote.image));
+                        if !remote.ports.is_empty() {
+                            output::line(format!("      Ports: {}", remote.ports.join(", ")));
+                        }
+                    }
+                }
 
-                                if detailed {
-                                    output::line(format!("      Image: {}", container.image));
-                                    output::line(format!(
-                                        "      Cached health: {} @ {}",
-                                        cached_health.as_str(),
-                                        checked_at
-                                    ));
-                                    if !container.ports.is_empty() {
-                                        output::line("      Ports:");
-                                        for port in &container.ports {
-                                            if let Some(host_port) = port.host_port {
-                                                output::line(format!(
-                                                    "        localhost:{} -> {}",
-                                                    host_port, port.container_port
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                service_records.push(ServiceStatusRecord {
+                    name: service_name.clone(),
+                    status: remote.status.clone(),
+                    cached_health: Some(health.as_str().to_string()),
+                    cached_last_checked_unix: Some(checked_at),
+                    image: Some(remote.image.clone()),
+                    ports: remote.ports.clone(),
+                    note: Some(format!("remote container on {}", remote.server)),
+                });
+                continue;
+            }
 
-                            let ports = container
+            if let Some(container_provider) = &local_container_provider {
+                match container_provider.get_container(service_name).await {
+                    Ok(container) => {
+                        let status_text = format!("{:?}", container.status);
+                        let cached_health = map_container_health(container.status.clone());
+                        let checked_at = unix_now();
+                        let replicas = state
+                            .services
+                            .get(service_name)
+                            .map(|s| s.replicas)
+                            .unwrap_or(1);
+                        let containers = state
+                            .services
+                            .get(service_name)
+                            .map(|s| s.containers.clone())
+                            .unwrap_or_else(|| vec![service_name.clone()]);
+
+                        state.services.insert(
+                            service_name.clone(),
+                            ServiceState {
+                                image: container.image.clone(),
+                                replicas,
+                                containers,
+                                health: cached_health,
+                                last_status: Some(status_text.clone()),
+                                last_checked_unix: checked_at,
+                                last_error: None,
+                            },
+                        );
+
+                        service_records.push(ServiceStatusRecord {
+                            name: service_name.clone(),
+                            status: status_text,
+                            cached_health: Some(cached_health.as_str().to_string()),
+                            cached_last_checked_unix: Some(checked_at),
+                            image: Some(container.image.clone()),
+                            ports: container
                                 .ports
                                 .iter()
                                 .filter_map(|port| {
@@ -324,88 +355,81 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                                         format!("localhost:{}->{}", host_port, port.container_port)
                                     })
                                 })
-                                .collect::<Vec<_>>();
+                                .collect(),
+                            note: Some("local docker daemon".to_string()),
+                        });
+                    }
+                    Err(_) => {
+                        let checked_at = unix_now();
+                        let replicas = state
+                            .services
+                            .get(service_name)
+                            .map(|s| s.replicas)
+                            .unwrap_or(0);
+                        let containers = state
+                            .services
+                            .get(service_name)
+                            .map(|s| s.containers.clone())
+                            .unwrap_or_default();
+                        state.services.insert(
+                            service_name.clone(),
+                            ServiceState {
+                                image: service_config.image.clone(),
+                                replicas,
+                                containers,
+                                health: HealthState::Unhealthy,
+                                last_status: Some("NotDeployed".to_string()),
+                                last_checked_unix: checked_at,
+                                last_error: Some("container not found".to_string()),
+                            },
+                        );
 
-                            service_records.push(ServiceStatusRecord {
-                                name: service_name.clone(),
-                                status: status_text,
-                                cached_health: Some(cached_health.as_str().to_string()),
-                                cached_last_checked_unix: Some(checked_at),
-                                image: Some(container.image.clone()),
-                                ports,
-                                note: None,
-                            });
-                        }
-                        Err(_) => {
-                            let checked_at = unix_now();
-                            let replicas = state
-                                .services
-                                .get(service_name)
-                                .map(|s| s.replicas)
-                                .unwrap_or(0);
-                            let containers = state
-                                .services
-                                .get(service_name)
-                                .map(|s| s.containers.clone())
-                                .unwrap_or_default();
-                            state.services.insert(
-                                service_name.clone(),
-                                ServiceState {
-                                    image: service_config.image.clone(),
-                                    replicas,
-                                    containers,
-                                    health: HealthState::Unhealthy,
-                                    last_status: Some("NotDeployed".to_string()),
-                                    last_checked_unix: checked_at,
-                                    last_error: Some("container not found".to_string()),
-                                },
-                            );
-
-                            if !output::is_json() {
-                                output::line(format!("   ❓ {} (not deployed)", service_name));
-                                if detailed {
-                                    output::line(format!(
-                                        "      Configured image: {}",
-                                        service_config.image
-                                    ));
-                                    output::line(format!(
-                                        "      Configured ports: {:?}",
-                                        service_config.ports
-                                    ));
-                                }
-                            }
-                            service_records.push(ServiceStatusRecord {
-                                name: service_name.clone(),
-                                status: "NotDeployed".to_string(),
-                                cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
-                                cached_last_checked_unix: Some(checked_at),
-                                image: Some(service_config.image.clone()),
-                                ports: Vec::new(),
-                                note: Some("container not found".to_string()),
-                            });
-                        }
+                        service_records.push(ServiceStatusRecord {
+                            name: service_name.clone(),
+                            status: "NotDeployed".to_string(),
+                            cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                            cached_last_checked_unix: Some(checked_at),
+                            image: Some(service_config.image.clone()),
+                            ports: Vec::new(),
+                            note: Some("container not found".to_string()),
+                        });
                     }
                 }
-            }
-            Err(e) => {
-                warn!("Failed to initialize container provider: {}", e);
-                if !output::is_json() {
-                    output::line("   ❌ Unable to check container status");
-                }
+            } else {
+                let checked_at = unix_now();
                 service_records.push(ServiceStatusRecord {
-                    name: "docker".to_string(),
+                    name: service_name.clone(),
                     status: "ProviderError".to_string(),
                     cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
-                    cached_last_checked_unix: Some(unix_now()),
-                    image: None,
+                    cached_last_checked_unix: Some(checked_at),
+                    image: Some(service_config.image.clone()),
                     ports: Vec::new(),
-                    note: Some(format!("container provider init failed: {}", e)),
+                    note: Some("container provider init failed".to_string()),
                 });
             }
         }
+
         if !output::is_json() {
             output::line("");
         }
+    }
+
+    if detailed && !output::is_json() {
+        output::line("🧱 Remote Container Inventory:");
+        if remote_containers.is_empty() {
+            output::line("   (none detected over SSH)");
+        } else {
+            for c in &remote_containers {
+                output::line(format!(
+                    "   • {} :: {} ({}) [{}]",
+                    c.server, c.name, c.image, c.status
+                ));
+                if !c.ports.is_empty() {
+                    output::line(format!("      Ports: {}", c.ports.join(", ")));
+                }
+            }
+        }
+        output::line("");
     }
 
     state.save()?;
@@ -416,6 +440,7 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
             description: config.project.description,
             infrastructure: infra_records,
             services: service_records,
+            remote_containers,
             drift,
         })?;
     } else {
@@ -457,6 +482,77 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     Ok(())
 }
 
+fn inspect_remote_containers_for_server(
+    server_cfg: &ServerConfig,
+    ip: &str,
+) -> Result<Vec<RemoteContainerRecord>> {
+    let users = ["root", "ubuntu"];
+    let mut last_err = None;
+
+    for user in users {
+        let mut ssh_cmd = Command::new("ssh");
+        ssh_cmd.args(["-o", "BatchMode=yes"]);
+        ssh_cmd.args(["-o", "ConnectTimeout=8"]);
+        ssh_cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
+        ssh_cmd.args(["-o", "LogLevel=ERROR"]);
+
+        if let Some(identity_path) = resolve_identity_path(&server_cfg.ssh_key)? {
+            ssh_cmd.args(["-i", &identity_path.to_string_lossy()]);
+        }
+
+        ssh_cmd.arg(format!("{}@{}", user, ip));
+        ssh_cmd.arg("docker");
+        ssh_cmd.arg("ps");
+        ssh_cmd.arg("--format");
+        ssh_cmd.arg("'{{json .}}'");
+
+        match ssh_cmd.output() {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let mut items = Vec::new();
+                for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+                    let parsed: DockerPsLine = serde_json::from_str(line).with_context(|| {
+                        format!(
+                            "Failed to parse docker ps JSON for server {}: {}",
+                            server_cfg.name, line
+                        )
+                    })?;
+                    items.push(RemoteContainerRecord {
+                        server: server_cfg.name.clone(),
+                        name: parsed.names.unwrap_or_default(),
+                        id: parsed.id.unwrap_or_default(),
+                        image: parsed.image.unwrap_or_default(),
+                        status: parsed.status.unwrap_or_else(|| "Unknown".to_string()),
+                        ports: parsed
+                            .ports
+                            .filter(|p| !p.is_empty())
+                            .map(|p| vec![p])
+                            .unwrap_or_default(),
+                    });
+                }
+                return Ok(items);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                last_err = Some(anyhow::anyhow!(
+                    "SSH/docker command failed as {}@{}: {}",
+                    user,
+                    ip,
+                    stderr.trim()
+                ));
+            }
+            Err(e) => {
+                last_err = Some(
+                    anyhow::Error::new(e)
+                        .context(format!("Failed to execute SSH command as {}@{}", user, ip)),
+                );
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Unable to inspect remote containers")))
+}
+
 fn map_server_health(status: airstack_metal::ServerStatus) -> HealthState {
     use airstack_metal::ServerStatus;
 
@@ -483,9 +579,48 @@ fn map_container_health(status: airstack_container::ContainerStatus) -> HealthSt
     }
 }
 
+fn map_remote_container_health(status: &str) -> HealthState {
+    let s = status.to_ascii_lowercase();
+    if s.starts_with("up") {
+        HealthState::Healthy
+    } else if s.contains("restart") {
+        HealthState::Degraded
+    } else {
+        HealthState::Unhealthy
+    }
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
+    if ssh_key.is_empty() {
+        return Ok(None);
+    }
+    if !(ssh_key.starts_with("~") || ssh_key.starts_with("/")) {
+        return Ok(None);
+    }
+
+    let path = if ssh_key.starts_with("~") {
+        let home = dirs::home_dir().context("Could not resolve home directory")?;
+        home.join(&ssh_key[2..])
+    } else {
+        PathBuf::from(ssh_key)
+    };
+
+    if path.extension().is_some_and(|ext| ext == "pub") {
+        let mut private = path.clone();
+        private.set_extension("");
+        if private.exists() {
+            return Ok(Some(private));
+        }
+    }
+    if path.exists() {
+        return Ok(Some(path));
+    }
+    Ok(None)
 }

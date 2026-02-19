@@ -74,6 +74,15 @@ enum Commands {
         #[arg(long, help = "Target server")]
         target: Option<String>,
     },
+    #[command(about = "Execute a command inside a container on a remote server")]
+    Cexec {
+        #[arg(help = "Server name")]
+        server: String,
+        #[arg(help = "Container name")]
+        container: String,
+        #[arg(help = "Command to execute in container", last = true)]
+        command: Vec<String>,
+    },
     #[command(about = "Scale a service to a target replica count")]
     Scale {
         #[arg(help = "Service name")]
@@ -152,6 +161,11 @@ async fn main() -> Result<()> {
         Commands::Deploy { service, target } => {
             commands::deploy::run(&cli.config, &service, target).await
         }
+        Commands::Cexec {
+            server,
+            container,
+            command,
+        } => commands::cexec::run(&cli.config, &server, &container, command).await,
         Commands::Scale { service, replicas } => {
             commands::scale::run(&cli.config, &service, replicas).await
         }

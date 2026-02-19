@@ -4,6 +4,7 @@ use airstack_metal::get_provider as get_metal_provider;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 use tracing::info;
 
@@ -62,17 +63,8 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
     ssh_cmd.args(&["-o", "LogLevel=ERROR"]);
 
     // Add SSH key if specified
-    if !server_config.ssh_key.is_empty()
-        && (server_config.ssh_key.starts_with("~") || server_config.ssh_key.starts_with("/"))
-    {
-        let key_path = if server_config.ssh_key.starts_with("~") {
-            let home = dirs::home_dir().context("Could not find home directory")?;
-            home.join(&server_config.ssh_key[2..])
-        } else {
-            server_config.ssh_key.clone().into()
-        };
-
-        ssh_cmd.args(&["-i", &key_path.to_string_lossy()]);
+    if let Some(identity_path) = resolve_identity_path(&server_config.ssh_key)? {
+        ssh_cmd.args(["-i", &identity_path.to_string_lossy()]);
     }
 
     // Default to root user for most cloud providers
@@ -132,4 +124,35 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
     }
 
     Ok(())
+}
+
+fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
+    if ssh_key.is_empty() {
+        return Ok(None);
+    }
+
+    if !(ssh_key.starts_with("~") || ssh_key.starts_with("/")) {
+        return Ok(None);
+    }
+
+    let path = if ssh_key.starts_with("~") {
+        let home = dirs::home_dir().context("Could not find home directory")?;
+        home.join(&ssh_key[2..])
+    } else {
+        PathBuf::from(ssh_key)
+    };
+
+    if path.extension().is_some_and(|ext| ext == "pub") {
+        let mut private = path.clone();
+        private.set_extension("");
+        if private.exists() {
+            return Ok(Some(private));
+        }
+    }
+
+    if path.exists() {
+        return Ok(Some(path));
+    }
+
+    Ok(None)
 }
