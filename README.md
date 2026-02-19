@@ -60,7 +60,8 @@ depends_on = ["nginx"]
 
 ```bash
 # Set your Hetzner API token
-export HETZNER_TOKEN="your-token-here"
+export HETZNER_API_KEY="your-token-here"
+# (also supported: HETZNER_TOKEN)
 
 # Provision infrastructure
 airstack up
@@ -139,7 +140,7 @@ TUI views:
 Currently supported:
 
 - **Hetzner Cloud** (`hetzner`)
-  - Set `HETZNER_TOKEN` environment variable
+  - Set `HETZNER_API_KEY` (or `HETZNER_TOKEN`) environment variable
   - Supports all server types and regions
 
 ### Container Runtimes

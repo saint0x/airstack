@@ -79,10 +79,14 @@ impl HetznerProvider {
     pub fn new(config: HashMap<String, String>) -> Result<Self> {
         let api_token = if let Some(token) = config.get("api_token") {
             token.clone()
+        } else if let Ok(token) = std::env::var("HETZNER_API_KEY") {
+            token
         } else if let Ok(token) = std::env::var("HETZNER_TOKEN") {
             token
         } else {
-            anyhow::bail!("Hetzner API token not found in config or HETZNER_TOKEN env var");
+            anyhow::bail!(
+                "Hetzner API token not found in config or env vars HETZNER_API_KEY/HETZNER_TOKEN"
+            );
         };
 
         let client = Client::builder()
