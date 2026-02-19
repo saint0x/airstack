@@ -3,7 +3,7 @@ name = "airstack-example"
 description = "Example Airstack project configuration"
 
 [[infra.servers]]
-name = "ubuntu-8gb-hel1-1"
+name = "quilt"
 provider = "hetzner"
 region = "hel1"
 server_type = "cpx32"

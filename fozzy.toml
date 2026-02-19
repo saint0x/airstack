@@ -1,0 +1,5 @@
+base_dir = ".fozzy"
+reporter = "pretty"
+proc_backend = "scripted"
+fs_backend = "virtual"
+http_backend = "scripted"
