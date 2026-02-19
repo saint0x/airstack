@@ -181,6 +181,8 @@ enum Commands {
     },
     #[command(about = "Run production safety checks")]
     Doctor,
+    #[command(about = "Validate full go-live readiness across infra/image/edge/health")]
+    GoLive,
     #[command(about = "Check image drift between config and running runtime")]
     Drift,
     #[command(about = "Registry credential diagnostics")]
@@ -304,6 +306,7 @@ async fn main() -> Result<()> {
         Commands::Apply => commands::apply::run(&cli.config, cli.allow_local_deploy).await,
         Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
         Commands::Doctor => commands::doctor::run(&cli.config).await,
+        Commands::GoLive => commands::golive::run(&cli.config).await,
         Commands::Drift => commands::drift::run(&cli.config).await,
         Commands::Registry { command } => commands::registry::run(&cli.config, command).await,
         Commands::Reconcile(mut args) => {

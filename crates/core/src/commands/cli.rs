@@ -186,17 +186,26 @@ async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
         let choice = select_index(
             theme,
             "Planning & Safety",
-            &["Plan", "Apply", "Doctor", "Runbook", "Secrets List", "Back"],
+            &[
+                "Plan",
+                "Apply",
+                "Doctor",
+                "Go-Live",
+                "Runbook",
+                "Secrets List",
+                "Back",
+            ],
         )?;
         match choice {
             0 => run_and_continue(commands::plan::run(config_path, false).await),
             1 => run_and_continue(commands::apply::run(config_path, false).await),
             2 => run_and_continue(commands::doctor::run(config_path).await),
-            3 => run_and_continue(commands::runbook::run(config_path).await),
-            4 => run_and_continue(
+            3 => run_and_continue(commands::golive::run(config_path).await),
+            4 => run_and_continue(commands::runbook::run(config_path).await),
+            5 => run_and_continue(
                 commands::secrets::run(config_path, commands::secrets::SecretsCommands::List).await,
             ),
-            5 => break,
+            6 => break,
             _ => {}
         }
     }

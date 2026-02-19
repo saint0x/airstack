@@ -121,6 +121,8 @@ fn status(edge: &airstack_config::EdgeConfig) -> Result<()> {
 struct EdgeDiagnosis {
     host: String,
     dns_resolved: bool,
+    dns_ttl_secs: Option<u32>,
+    nameservers: Vec<String>,
     tls_handshake_ok: bool,
     remediation: Vec<String>,
 }
@@ -136,6 +138,8 @@ async fn diagnose(config: &AirstackConfig) -> Result<()> {
             .map(|iter| iter.map(|a| a.ip().to_string()).collect::<Vec<_>>())
             .unwrap_or_default();
         let dns_ok = !resolved.is_empty();
+        let dns_ttl_secs = query_dns_ttl(&site.host).await;
+        let nameservers = query_nameservers(&site.host).await;
         let dns_target_matches = expected_edge_ip
             .as_ref()
             .map(|ip| resolved.iter().any(|r| r == ip))
@@ -148,6 +152,9 @@ async fn diagnose(config: &AirstackConfig) -> Result<()> {
                 "DNS: ensure A/AAAA for '{}' points to edge host before ACME issuance",
                 site.host
             ));
+            if nameservers.is_empty() {
+                remediation.push("NS visibility: no nameservers discovered for host domain; verify delegation at registrar".to_string());
+            }
         } else if !dns_target_matches {
             remediation.push(format!(
                 "DNS mismatch: '{}' resolves to [{}], expected edge IP {}",
@@ -190,6 +197,8 @@ async fn diagnose(config: &AirstackConfig) -> Result<()> {
         rows.push(EdgeDiagnosis {
             host: site.host.clone(),
             dns_resolved: dns_ok,
+            dns_ttl_secs,
+            nameservers,
             tls_handshake_ok: tls_ok,
             remediation,
         });
@@ -203,8 +212,19 @@ async fn diagnose(config: &AirstackConfig) -> Result<()> {
             let ok = row.dns_resolved && row.tls_handshake_ok;
             let mark = if ok { "✅" } else { "❌" };
             output::line(format!(
-                "{} {} dns={} tls={}",
-                mark, row.host, row.dns_resolved, row.tls_handshake_ok
+                "{} {} dns={} ttl={}ns={} tls={}",
+                mark,
+                row.host,
+                row.dns_resolved,
+                row.dns_ttl_secs
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+                if row.nameservers.is_empty() {
+                    "?".to_string()
+                } else {
+                    row.nameservers.join(",")
+                },
+                row.tls_handshake_ok
             ));
             for hint in &row.remediation {
                 output::line(format!("   - {}", hint));
@@ -353,4 +373,61 @@ fn render_caddyfile(sites: &[EdgeSiteConfig]) -> String {
         lines.push(String::new());
     }
     lines.join("\n")
+}
+
+async fn query_dns_ttl(host: &str) -> Option<u32> {
+    let out = Command::new("sh")
+        .arg("-lc")
+        .arg(format!(
+            "dig +noall +answer A {} 2>/dev/null | head -n 1",
+            host
+        ))
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if line.is_empty() {
+        return None;
+    }
+    let parts = line.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    parts.get(1)?.parse::<u32>().ok()
+}
+
+async fn query_nameservers(host: &str) -> Vec<String> {
+    let apex = derive_apex(host);
+    let cmd = format!(
+        "dig +short NS {host} 2>/dev/null; dig +short NS {apex} 2>/dev/null",
+        host = host,
+        apex = apex
+    );
+    let out = Command::new("sh").arg("-lc").arg(cmd).output().await;
+    let Ok(out) = out else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut uniq = std::collections::BTreeSet::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let ns = line.trim().trim_end_matches('.');
+        if !ns.is_empty() {
+            uniq.insert(ns.to_string());
+        }
+    }
+    uniq.into_iter().collect()
+}
+
+fn derive_apex(host: &str) -> String {
+    let parts = host.split('.').collect::<Vec<_>>();
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    } else {
+        host.to_string()
+    }
 }

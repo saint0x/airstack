@@ -7,6 +7,7 @@ pub mod destroy;
 pub mod doctor;
 pub mod drift;
 pub mod edge;
+pub mod golive;
 pub mod init;
 pub mod logs;
 pub mod plan;

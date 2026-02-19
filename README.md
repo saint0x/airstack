@@ -101,6 +101,7 @@ airstack status
 | `airstack drift` | Detect config image tag vs running image drift |
 | `airstack registry doctor [--server <name>] --image <image>` | Verify remote registry pull credentials/scope |
 | `airstack reconcile [--dry-run] [--detailed]` | Idempotent converge-to-config workflow |
+| `airstack go-live` | One-shot go-live readiness (infra + image pull + edge DNS/TLS + app health) |
 | `airstack runbook` | Print operational command runbook |
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |

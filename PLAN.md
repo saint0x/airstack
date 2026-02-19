@@ -36,6 +36,9 @@ Production Expansion Status (current)
 - ✅ Idempotent reconcile command (`reconcile`)
 - ✅ Blue/green + canary deploy strategy primitive (`deploy/ship --strategy ...`)
 - ✅ Expanded Fozzy production gate (`scripts/fozzy-suite.sh` + host-backed scenarios + trace CI checks)
+- ✅ Registry doctor now classifies failures (`auth_denied` / `tag_missing` / `network`) + remediation hints
+- ✅ Edge diagnose includes DNS TTL + nameserver visibility context
+- ✅ Full go-live readiness command (`go-live`)
 
 Implementation Audit (as of February 19, 2026)
 
