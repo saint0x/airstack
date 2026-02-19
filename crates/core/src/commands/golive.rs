@@ -187,6 +187,7 @@ async fn app_health_checks(config: &AirstackConfig, checks: &mut Vec<ReadinessCh
     };
 
     let mut failures = Vec::new();
+    let mut passed = Vec::new();
     let mut missing_hc = BTreeMap::new();
     for (name, svc) in services {
         let Some(hc) = &svc.healthcheck else {
@@ -195,29 +196,82 @@ async fn app_health_checks(config: &AirstackConfig, checks: &mut Vec<ReadinessCh
         };
         match resolve_target(config, svc, false) {
             Ok(target) => {
-                if let Err(e) = run_healthcheck(&target, name, hc).await {
-                    failures.push(format!("{}: {}", name, e));
-                }
+                match run_healthcheck(&target, name, hc).await {
+                    Ok(_) => passed.push(name.clone()),
+                    Err(e) => failures.push(format!("{}: {}", name, e)),
+                };
             }
             Err(e) => failures.push(format!("{}: target resolution failed ({})", name, e)),
         }
     }
 
+    checks.push(build_app_health_check(passed, missing_hc, failures));
+}
+
+fn build_app_health_check(
+    passed: Vec<String>,
+    missing_hc: BTreeMap<String, String>,
+    failures: Vec<String>,
+) -> ReadinessCheck {
+    let ok = failures.is_empty();
+    let mut detail_parts = Vec::new();
+    if !passed.is_empty() {
+        detail_parts.push(format!(
+            "passed: {}",
+            passed
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if !missing_hc.is_empty() {
-        failures.extend(
+        detail_parts.push(format!(
+            "skipped (no healthcheck): {}",
             missing_hc
                 .keys()
-                .map(|k| format!("{}: missing healthcheck", k)),
-        );
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !failures.is_empty() {
+        detail_parts.push(format!("failed: {}", failures.join(" | ")));
+    }
+    ReadinessCheck {
+        name: "app-health".to_string(),
+        ok,
+        detail: if detail_parts.is_empty() {
+            "no service healthchecks configured (skipped)".to_string()
+        } else {
+            detail_parts.join(" ; ")
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_app_health_check;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn app_health_missing_checks_are_skipped_not_failed() {
+        let mut missing = BTreeMap::new();
+        missing.insert("database".to_string(), "missing healthcheck".to_string());
+        let check = build_app_health_check(vec!["api".to_string()], missing, vec![]);
+        assert!(check.ok);
+        assert!(check.detail.contains("passed: api"));
+        assert!(check.detail.contains("skipped (no healthcheck): database"));
     }
 
-    checks.push(ReadinessCheck {
-        name: "app-health".to_string(),
-        ok: failures.is_empty(),
-        detail: if failures.is_empty() {
-            "all service healthchecks passed".to_string()
-        } else {
-            failures.join(" | ")
-        },
-    });
+    #[test]
+    fn app_health_real_failures_fail_check() {
+        let check = build_app_health_check(
+            vec![],
+            BTreeMap::new(),
+            vec!["api: status code 500".to_string()],
+        );
+        assert!(!check.ok);
+        assert!(check.detail.contains("failed: api: status code 500"));
+    }
 }
