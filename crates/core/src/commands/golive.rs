@@ -1,5 +1,7 @@
 use crate::commands::edge;
-use crate::deploy_runtime::{evaluate_service_health, preflight_image_access, resolve_target};
+use crate::deploy_runtime::{
+    evaluate_service_health, preflight_image_access, preflight_runtime_abi, resolve_target,
+};
 use crate::output;
 use airstack_config::AirstackConfig;
 use airstack_metal::get_provider as get_metal_provider;
@@ -162,6 +164,8 @@ async fn image_pull_checks(config: &AirstackConfig, checks: &mut Vec<ReadinessCh
         match resolve_target(config, svc, false) {
             Ok(target) => {
                 if let Err(e) = preflight_image_access(&target, &svc.image).await {
+                    failures.push(format!("{}: {}", name, e));
+                } else if let Err(e) = preflight_runtime_abi(&target, name, svc).await {
                     failures.push(format!("{}: {}", name, e));
                 }
             }

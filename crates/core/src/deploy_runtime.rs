@@ -141,6 +141,7 @@ pub async fn deploy_service(
     service: &ServiceConfig,
 ) -> Result<RuntimeDeployResult> {
     preflight_image_access(target, &service.image).await?;
+    preflight_runtime_abi(target, name, service).await?;
 
     let mut run_parts = vec![
         "docker".to_string(),
@@ -192,6 +193,72 @@ pub async fn deploy_service(
 
     let launched_id = String::from_utf8_lossy(&run_out.stdout).trim().to_string();
     inspect_service(target, name, Some(launched_id)).await
+}
+
+pub async fn preflight_runtime_abi(
+    target: &RuntimeTarget,
+    service_name: &str,
+    service: &ServiceConfig,
+) -> Result<()> {
+    let image_arch = image_architecture(target, &service.image).await?;
+    let host_arch = runtime_architecture(target).await?;
+    if !arch_compatible(&image_arch, &host_arch) {
+        anyhow::bail!(
+            "Runtime ABI guard: image '{}' arch '{}' does not match host arch '{}'. Rebuild/publish image for target arch before deploy.",
+            service.image,
+            image_arch,
+            host_arch
+        );
+    }
+
+    let Some(hc) = &service.healthcheck else {
+        return Ok(());
+    };
+    if hc.command.is_empty() {
+        return Ok(());
+    }
+
+    let mut probe_parts = vec![
+        "docker".to_string(),
+        "run".to_string(),
+        "--rm".to_string(),
+        "--entrypoint".to_string(),
+        hc.command[0].clone(),
+        service.image.clone(),
+    ];
+    probe_parts.extend(hc.command.iter().skip(1).cloned());
+
+    let probe_script = join_shell_command(&probe_parts);
+    let out = run_shell(target, &probe_script).await?;
+    if out.status.success() {
+        return Ok(());
+    }
+
+    let reason = summarize_process_failure(&out);
+    let lower = format!(
+        "{} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .to_ascii_lowercase();
+    if lower.contains("exec format error")
+        || lower.contains("no such file or directory")
+        || lower.contains("not found")
+    {
+        anyhow::bail!(
+            "Runtime ABI guard for '{}': probe command '{}' failed before deploy ({}) . This often indicates libc/ABI mismatch (musl vs glibc) or wrong target architecture.",
+            service_name,
+            hc.command.join(" "),
+            reason
+        );
+    }
+
+    anyhow::bail!(
+        "Runtime ABI guard for '{}': probe command '{}' failed before deploy ({})",
+        service_name,
+        hc.command.join(" "),
+        reason
+    );
 }
 
 pub async fn deploy_service_with_strategy(
@@ -284,6 +351,7 @@ pub async fn rollback_service(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn run_healthcheck(
     target: &RuntimeTarget,
     name: &str,
@@ -307,6 +375,7 @@ pub async fn run_healthcheck(
     }
 }
 
+#[allow(dead_code)]
 pub async fn run_http_health_probe(
     target: &RuntimeTarget,
     port: u16,
@@ -664,6 +733,50 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+async fn image_architecture(target: &RuntimeTarget, image: &str) -> Result<String> {
+    let out = run_shell(
+        target,
+        &format!(
+            "docker image inspect -f '{{{{.Architecture}}}}' {} 2>/dev/null || true",
+            shell_quote(image)
+        ),
+    )
+    .await?;
+    if !out.status.success() {
+        anyhow::bail!("failed to inspect image architecture for '{}'", image);
+    }
+    let arch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if arch.is_empty() {
+        anyhow::bail!("image architecture unknown for '{}'", image);
+    }
+    Ok(arch)
+}
+
+async fn runtime_architecture(target: &RuntimeTarget) -> Result<String> {
+    let out = run_shell(target, "uname -m").await?;
+    if !out.status.success() {
+        anyhow::bail!("failed to detect runtime architecture");
+    }
+    let arch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if arch.is_empty() {
+        anyhow::bail!("runtime architecture unknown");
+    }
+    Ok(arch)
+}
+
+fn arch_compatible(image_arch: &str, host_arch: &str) -> bool {
+    normalize_arch(image_arch) == normalize_arch(host_arch)
+}
+
+fn normalize_arch(value: &str) -> &str {
+    match value {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
+
+#[allow(dead_code)]
 fn summarize_process_failure(output: &Output) -> String {
     let code = output
         .status

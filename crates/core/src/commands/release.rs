@@ -66,14 +66,22 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
                 &format!("host=ssh://root@{}", ip),
             ],
         )?;
-        run_cmd(
+        let build_result = run_cmd(
             "docker",
             &["--context", &ctx, "build", "-t", &final_image, "."],
-        )?;
-        if args.push {
-            run_cmd("docker", &["--context", &ctx, "push", &final_image])?;
+        )
+        .and_then(|_| {
+            if args.push {
+                run_cmd("docker", &["--context", &ctx, "push", &final_image])
+            } else {
+                Ok(())
+            }
+        });
+        let cleanup_result = run_cmd("docker", &["context", "rm", "-f", &ctx]);
+        if let Err(e) = build_result {
+            return Err(e);
         }
-        let _ = run_cmd("docker", &["context", "rm", "-f", &ctx]);
+        let _ = cleanup_result;
     } else {
         run_cmd("docker", &["build", "-t", &final_image, "."])?;
     }

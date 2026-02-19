@@ -127,6 +127,14 @@ struct EdgeDiagnosis {
     remediation: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct EdgeApplySummary {
+    changed: bool,
+    restart_required: bool,
+    target: String,
+    diff_preview: Vec<String>,
+}
+
 async fn diagnose(config: &AirstackConfig) -> Result<()> {
     let edge = config.edge.as_ref().context("No [edge] config defined")?;
     let expected_edge_ip = resolve_edge_server_ip(config).await;
@@ -355,20 +363,26 @@ exit 1
     }
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let applied = stdout
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .last()
-        .unwrap_or_default()
-        .to_string();
-    if !applied.is_empty() {
-        output::line(format!("✅ edge apply: {}", applied));
-        if stdout.contains("--- ") || stdout.contains("+++ ") {
-            output::line("ℹ️ edge apply: Caddyfile diff emitted by remote apply");
+    let summary = parse_apply_summary(&stdout);
+    if output::is_json() {
+        output::emit_json(&summary)?;
+        return Ok(());
+    }
+
+    output::line(format!(
+        "✅ edge apply: changed={} restart={} target={}",
+        summary.changed, summary.restart_required, summary.target
+    ));
+    if !summary.diff_preview.is_empty() {
+        output::line("ℹ️ edge apply: diff preview");
+        for line in &summary.diff_preview {
+            output::line(format!("   {}", line));
         }
+    }
+    if !summary.changed {
+        output::line("ℹ️ edge apply: no changes needed");
     } else {
-        output::line("✅ edge apply: caddy config synced");
+        output::line("ℹ️ edge apply: config updated");
     }
     Ok(())
 }
@@ -455,5 +469,53 @@ fn derive_apex(host: &str) -> String {
         format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
     } else {
         host.to_string()
+    }
+}
+
+fn parse_apply_summary(stdout: &str) -> EdgeApplySummary {
+    let mut changed = false;
+    let mut restart_required = false;
+    let mut target = "unknown".to_string();
+    let mut diff_preview = Vec::new();
+
+    for line in stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(rest) = line.strip_prefix("changed=") {
+            let mut ch = None;
+            let mut rs = None;
+            let mut tg = None;
+            for part in rest.split_whitespace() {
+                if let Some(v) = part.strip_prefix("restart=") {
+                    rs = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+                } else if let Some(v) = part.strip_prefix("target=") {
+                    tg = Some(v.to_string());
+                } else if ch.is_none() {
+                    ch = Some(part == "1" || part.eq_ignore_ascii_case("true"));
+                }
+            }
+            changed = ch.unwrap_or(false);
+            restart_required = rs.unwrap_or(false);
+            if let Some(t) = tg {
+                target = t;
+            }
+            continue;
+        }
+
+        if line.starts_with("---")
+            || line.starts_with("+++")
+            || line.starts_with("@@")
+            || line.starts_with('+')
+            || line.starts_with('-')
+        {
+            if diff_preview.len() < 80 {
+                diff_preview.push(line.to_string());
+            }
+        }
+    }
+
+    EdgeApplySummary {
+        changed,
+        restart_required,
+        target,
+        diff_preview,
     }
 }
