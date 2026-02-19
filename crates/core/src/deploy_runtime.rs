@@ -305,58 +305,62 @@ async fn inspect_service(
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .unwrap_or(name);
+        .unwrap_or(name)
+        .to_string();
 
+    // Use docker inspect as the source of truth for discovery/existence.
     let inspect = run_shell(
         target,
         &format!(
-            "docker ps -a --filter id={inspect_id} --format '{{{{.ID}}}}|{{{{.Image}}}}|{{{{.Status}}}}|{{{{.Ports}}}}' | head -n 1"
+            "docker inspect -f '{{{{.Id}}}}|{{{{.Config.Image}}}}|{{{{.State.Status}}}}' {inspect_id} 2>/dev/null || true"
         ),
     )
     .await?;
+    let mut line = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
+    let mut detected_by = "id";
 
-    if !inspect.status.success() {
-        let stderr = String::from_utf8_lossy(&inspect.stderr);
-        anyhow::bail!(
-            "Failed to inspect deployed service '{}': {}",
-            name,
-            stderr.trim()
-        );
-    }
-
-    let line = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
     if line.is_empty() {
-        // Fallback by name for runtimes that don't return a stable ID on stdout.
         let by_name = run_shell(
             target,
             &format!(
-                "docker ps -a --filter name=/{name}$ --format '{{{{.ID}}}}|{{{{.Image}}}}|{{{{.Status}}}}|{{{{.Ports}}}}' | head -n 1"
+                "docker inspect -f '{{{{.Id}}}}|{{{{.Config.Image}}}}|{{{{.State.Status}}}}' {name} 2>/dev/null || true"
             ),
         )
         .await?;
-        let fallback_line = String::from_utf8_lossy(&by_name.stdout).trim().to_string();
-        if fallback_line.is_empty() {
-            anyhow::bail!("Deployed service '{}' was not found after deploy", name);
-        }
-        return parse_inspect_line(&fallback_line, "name");
+        line = String::from_utf8_lossy(&by_name.stdout).trim().to_string();
+        detected_by = "name";
     }
 
-    parse_inspect_line(&line, "id")
+    if line.is_empty() {
+        anyhow::bail!("Deployed service '{}' was not found after deploy", name);
+    }
+
+    let mut result = parse_inspect_line(&line, detected_by)?;
+    let ports_out = run_shell(
+        target,
+        &format!("docker ps -a --filter name=^/{name}$ --format '{{{{.Ports}}}}' | head -n 1"),
+    )
+    .await?;
+    if ports_out.status.success() {
+        let ports_line = String::from_utf8_lossy(&ports_out.stdout)
+            .trim()
+            .to_string();
+        if !ports_line.is_empty() {
+            result.ports = ports_line
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+        }
+    }
+    Ok(result)
 }
 
 fn parse_inspect_line(line: &str, detected_by: &str) -> Result<RuntimeDeployResult> {
     let parts: Vec<&str> = line.split('|').collect();
     let id = parts.first().copied().unwrap_or_default().to_string();
     let status = parts.get(2).copied().unwrap_or_default().to_string();
-    let ports = parts
-        .get(3)
-        .map(|p| {
-            p.split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let ports = Vec::new();
 
     let s = status.to_ascii_lowercase();
     let running = s.starts_with("up") || s.contains("running") || s.contains("started");

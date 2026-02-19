@@ -397,7 +397,9 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                 continue;
             }
 
-            if let Some(remote) = remote_containers.iter().find(|c| c.name == *service_name) {
+            if let Some(remote) =
+                find_remote_for_service(service_name, service_config, &remote_containers)
+            {
                 let checked_at = unix_now();
                 let health = map_remote_container_health(&remote.status);
                 state.services.insert(
@@ -660,12 +662,16 @@ fn parse_remote_container_lines(
     let stdout = String::from_utf8_lossy(stdout);
     let mut items = Vec::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let parsed: DockerPsLine = serde_json::from_str(line).with_context(|| {
-            format!(
-                "Failed to parse docker ps JSON for server {}: {}",
-                server_cfg.name, line
-            )
-        })?;
+        let parsed: DockerPsLine = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "Skipping unparsable docker ps line for {}: {} ({})",
+                    server_cfg.name, line, e
+                );
+                continue;
+            }
+        };
         items.push(RemoteContainerRecord {
             server: server_cfg.name.clone(),
             name: parsed.names.unwrap_or_default(),
@@ -680,6 +686,34 @@ fn parse_remote_container_lines(
         });
     }
     Ok(items)
+}
+
+fn find_remote_for_service<'a>(
+    service_name: &str,
+    service_cfg: &airstack_config::ServiceConfig,
+    remote_containers: &'a [RemoteContainerRecord],
+) -> Option<&'a RemoteContainerRecord> {
+    if let Some(exact) = remote_containers.iter().find(|c| c.name == service_name) {
+        return Some(exact);
+    }
+
+    if let Some(prefix) = remote_containers.iter().find(|c| {
+        c.name == format!("{service_name}-1")
+            || c.name.starts_with(&format!("{service_name}_"))
+            || c.name.starts_with(&format!("{service_name}-"))
+    }) {
+        return Some(prefix);
+    }
+
+    let desired_repo = service_cfg
+        .image
+        .split(':')
+        .next()
+        .unwrap_or(&service_cfg.image);
+    remote_containers.iter().find(|c| {
+        let running_repo = c.image.split(':').next().unwrap_or(&c.image);
+        running_repo == desired_repo
+    })
 }
 
 async fn inspect_fly_workloads_for_server(

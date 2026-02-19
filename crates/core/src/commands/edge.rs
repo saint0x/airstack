@@ -1,5 +1,5 @@
 use crate::output;
-use crate::ssh_utils::execute_remote_command;
+use crate::ssh_utils::{execute_remote_command, lookup_provider_server};
 use airstack_config::{AirstackConfig, EdgeSiteConfig};
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -43,8 +43,8 @@ pub async fn run(config_path: &str, command: EdgeCommands) -> Result<()> {
         EdgeCommands::Plan => plan(edge),
         EdgeCommands::Validate => validate(edge),
         EdgeCommands::Status => status(edge),
-        EdgeCommands::Diagnose => diagnose(edge).await,
-        EdgeCommands::Apply => apply(&config).await,
+        EdgeCommands::Diagnose => diagnose(&config).await,
+        EdgeCommands::Apply => apply_from_config(&config).await,
     }
 }
 
@@ -125,13 +125,21 @@ struct EdgeDiagnosis {
     remediation: Vec<String>,
 }
 
-async fn diagnose(edge: &airstack_config::EdgeConfig) -> Result<()> {
+async fn diagnose(config: &AirstackConfig) -> Result<()> {
+    let edge = config.edge.as_ref().context("No [edge] config defined")?;
+    let expected_edge_ip = resolve_edge_server_ip(config).await;
+
     let mut rows = Vec::new();
     for site in &edge.sites {
-        let dns_ok = (site.host.as_str(), 443)
+        let resolved = (site.host.as_str(), 443)
             .to_socket_addrs()
-            .map(|mut a| a.next().is_some())
-            .unwrap_or(false);
+            .map(|iter| iter.map(|a| a.ip().to_string()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let dns_ok = !resolved.is_empty();
+        let dns_target_matches = expected_edge_ip
+            .as_ref()
+            .map(|ip| resolved.iter().any(|r| r == ip))
+            .unwrap_or(true);
 
         let mut tls_ok = false;
         let mut remediation = Vec::new();
@@ -140,6 +148,17 @@ async fn diagnose(edge: &airstack_config::EdgeConfig) -> Result<()> {
                 "DNS: ensure A/AAAA for '{}' points to edge host before ACME issuance",
                 site.host
             ));
+        } else if !dns_target_matches {
+            remediation.push(format!(
+                "DNS mismatch: '{}' resolves to [{}], expected edge IP {}",
+                site.host,
+                resolved.join(", "),
+                expected_edge_ip
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
+            ));
+            remediation
+                .push("Update DNS A/AAAA to the expected edge IP before ACME issuance".to_string());
         } else {
             let out = Command::new("sh")
                 .arg("-lc")
@@ -199,7 +218,7 @@ async fn diagnose(edge: &airstack_config::EdgeConfig) -> Result<()> {
     Ok(())
 }
 
-async fn apply(config: &AirstackConfig) -> Result<()> {
+pub async fn apply_from_config(config: &AirstackConfig) -> Result<()> {
     let edge = config.edge.as_ref().context("No [edge] config defined")?;
     if edge.provider != "caddy" {
         anyhow::bail!("Only edge.provider='caddy' is currently supported");
@@ -215,9 +234,30 @@ async fn apply(config: &AirstackConfig) -> Result<()> {
         .context("Edge apply requires at least one server")?;
 
     let caddyfile = render_caddyfile(&edge.sites);
+    let escaped = caddyfile.replace('\\', "\\\\").replace('"', "\\\"");
     let upload_script = format!(
-        "cat > /etc/caddy/Caddyfile <<'CADDY'\n{}\nCADDY\n && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy",
-        caddyfile
+        "set -e; \
+target=\"\"; \
+for p in /opt/aria/Caddyfile /etc/caddy/Caddyfile; do [ -e \"$p\" ] && target=\"$p\" && break; done; \
+if [ -z \"$target\" ]; then \
+  if [ -d /opt/aria ]; then target=/opt/aria/Caddyfile; \
+  elif [ -d /etc/caddy ]; then target=/etc/caddy/Caddyfile; \
+  else mkdir -p /etc/caddy; target=/etc/caddy/Caddyfile; fi; \
+fi; \
+mkdir -p \"$(dirname \"$target\")\"; \
+cat > \"$target\" <<'CADDY'\n{caddy}\nCADDY\n\
+if [ \"$target\" = \"/etc/caddy/Caddyfile\" ] && command -v caddy >/dev/null 2>&1; then \
+  caddy validate --config \"$target\"; \
+  if command -v systemctl >/dev/null 2>&1; then systemctl reload caddy || true; fi; \
+fi; \
+if command -v docker >/dev/null 2>&1; then \
+  if docker ps --format '{{{{.Names}}}}' | grep -qx caddy; then \
+    docker exec caddy sh -lc \"printf '%s' \\\"{escaped}\\\" > /etc/caddy/Caddyfile && caddy validate --config /etc/caddy/Caddyfile\"; \
+    docker restart caddy >/dev/null 2>&1 || true; \
+  fi; \
+fi; \
+echo \"$target\"",
+        caddy = caddyfile
     );
 
     let out = execute_remote_command(
@@ -231,8 +271,26 @@ async fn apply(config: &AirstackConfig) -> Result<()> {
         anyhow::bail!("Edge apply failed: {}", stderr.trim());
     }
 
-    output::line("✅ edge apply: caddy config updated and reloaded");
+    let applied = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .last()
+        .unwrap_or_default()
+        .to_string();
+    if !applied.is_empty() {
+        output::line(format!("✅ edge apply: caddy config synced at {}", applied));
+    } else {
+        output::line("✅ edge apply: caddy config synced");
+    }
     Ok(())
+}
+
+async fn resolve_edge_server_ip(config: &AirstackConfig) -> Option<String> {
+    let infra = config.infra.as_ref()?;
+    let server = infra.servers.first()?;
+    let provider_server = lookup_provider_server(server).await.ok()?;
+    provider_server.public_ip
 }
 
 fn render_caddyfile(sites: &[EdgeSiteConfig]) -> String {

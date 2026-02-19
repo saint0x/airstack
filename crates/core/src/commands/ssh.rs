@@ -1,5 +1,5 @@
 use crate::output;
-use crate::ssh_utils::{execute_remote_command, start_remote_session};
+use crate::ssh_utils::{execute_remote_command, join_shell_command, start_remote_session};
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -40,7 +40,7 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
 
     // Add command if specified
     if !command.is_empty() {
-        output::line(format!("🔧 Executing: {}", command.join(" ")));
+        output::line(format!("🔧 Executing: {}", join_shell_command(&command)));
         let output = execute_remote_command(server_config, &command).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -57,7 +57,10 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
             })?;
         } else {
             if !stdout.is_empty() {
-                println!("{}", stdout);
+                print!("{}", stdout);
+                if !stdout.ends_with('\n') {
+                    println!();
+                }
             }
             if !stderr.is_empty() {
                 output::error_line(stderr);

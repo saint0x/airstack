@@ -1,3 +1,4 @@
+use crate::commands::edge;
 use crate::deploy_runtime::{
     deploy_service_with_strategy, existing_service_image, resolve_target, rollback_service,
     run_healthcheck, DeployStrategy,
@@ -115,6 +116,12 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
 
     if args.update_config {
         update_config_image(config_path, &args.service, &final_image)?;
+    }
+
+    if args.service == "caddy" && config.edge.is_some() {
+        edge::apply_from_config(&config)
+            .await
+            .with_context(|| "Failed to sync edge config during caddy ship")?;
     }
 
     if output::is_json() {

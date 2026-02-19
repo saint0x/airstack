@@ -87,6 +87,9 @@ pub async fn run(
     } else {
         if !stdout.is_empty() {
             print!("{stdout}");
+            if !stdout.ends_with('\n') {
+                println!();
+            }
         }
         if !stderr.is_empty() {
             output::error_line(stderr);
@@ -170,6 +173,9 @@ async fn run_fly_container_exec(
     } else {
         if !stdout.is_empty() {
             print!("{stdout}");
+            if !stdout.ends_with('\n') {
+                println!();
+            }
         }
         if !stderr.is_empty() {
             output::error_line(stderr);

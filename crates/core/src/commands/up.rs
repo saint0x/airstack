@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn};
 
+use crate::commands::edge;
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
     deploy_service, existing_service_image, resolve_target, rollback_service, run_healthcheck,
@@ -238,6 +239,13 @@ pub async fn run(
                     last_error: None,
                 },
             );
+
+            if service_name == "caddy" && config.edge.is_some() {
+                edge::apply_from_config(&config)
+                    .await
+                    .with_context(|| "Failed to sync edge config during caddy deploy")?;
+                output::line("✅ edge config reconciled during caddy deploy");
+            }
         }
     }
 
