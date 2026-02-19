@@ -4,6 +4,7 @@ use airstack_metal::{get_provider as get_metal_provider, Server};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -67,6 +68,32 @@ struct DockerPsLine {
     status: Option<String>,
     #[serde(rename = "Ports")]
     ports: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlyMachineStatusLine {
+    id: String,
+    name: Option<String>,
+    state: Option<String>,
+    config: Option<FlyMachineStatusConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlyMachineStatusConfig {
+    image: Option<String>,
+    services: Option<Vec<FlyMachineService>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlyMachineService {
+    internal_port: Option<u16>,
+    ports: Option<Vec<FlyMachinePort>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlyMachinePort {
+    port: Option<u16>,
+    handlers: Option<Vec<String>>,
 }
 
 pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
@@ -249,16 +276,15 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     if let Some(infra) = &config.infra {
         let mut probe_set = JoinSet::new();
         for server_cfg in &infra.servers {
-            if server_cfg.provider == "fly" {
-                continue;
-            }
             let cfg = server_cfg.clone();
             probe_set.spawn(async move {
                 let server_name = cfg.name.clone();
-                (
-                    server_name,
-                    inspect_remote_containers_for_server(&cfg).await,
-                )
+                let result = if cfg.provider == "fly" {
+                    inspect_fly_workloads_for_server(&cfg).await
+                } else {
+                    inspect_remote_containers_for_server(&cfg).await
+                };
+                (server_name, result)
             });
         }
 
@@ -548,6 +574,82 @@ async fn inspect_remote_containers_for_server(
         });
     }
     Ok(items)
+}
+
+async fn inspect_fly_workloads_for_server(
+    server_cfg: &ServerConfig,
+) -> Result<Vec<RemoteContainerRecord>> {
+    let mut cmd = Command::new("flyctl");
+    cmd.arg("machine")
+        .arg("list")
+        .arg("--app")
+        .arg(&server_cfg.name)
+        .arg("--json");
+
+    if let Ok(token) = std::env::var("FLY_API_TOKEN") {
+        cmd.env("FLY_API_TOKEN", token.clone());
+        cmd.env("FLY_ACCESS_TOKEN", token);
+    } else if let Ok(token) = std::env::var("FLY_ACCESS_TOKEN") {
+        cmd.env("FLY_API_TOKEN", token.clone());
+        cmd.env("FLY_ACCESS_TOKEN", token);
+    }
+
+    let out = cmd
+        .output()
+        .await
+        .context("Failed to execute flyctl machine list")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("fly machine list failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let machines: Vec<FlyMachineStatusLine> =
+        serde_json::from_str(&stdout).context("Failed to parse fly machine list JSON")?;
+
+    let mut records = Vec::new();
+    for machine in machines {
+        let ports = machine
+            .config
+            .as_ref()
+            .and_then(|c| c.services.as_ref())
+            .map(|services| {
+                let mut out = Vec::new();
+                for svc in services {
+                    let internal = svc.internal_port.unwrap_or_default();
+                    if let Some(mapped) = &svc.ports {
+                        for p in mapped {
+                            let external = p.port.unwrap_or_default();
+                            let handlers = p
+                                .handlers
+                                .as_ref()
+                                .map(|h| h.join("+"))
+                                .unwrap_or_else(|| "raw".to_string());
+                            out.push(format!("{}->{} ({})", external, internal, handlers));
+                        }
+                    } else if internal > 0 {
+                        out.push(format!("internal:{}", internal));
+                    }
+                }
+                out
+            })
+            .unwrap_or_default();
+
+        records.push(RemoteContainerRecord {
+            server: server_cfg.name.clone(),
+            name: machine.name.unwrap_or_else(|| machine.id.clone()),
+            id: machine.id.clone(),
+            image: machine
+                .config
+                .as_ref()
+                .and_then(|c| c.image.clone())
+                .unwrap_or_else(|| "fly-machine".to_string()),
+            status: machine.state.unwrap_or_else(|| "unknown".to_string()),
+            ports,
+        });
+    }
+
+    Ok(records)
 }
 
 async fn fetch_provider_servers(

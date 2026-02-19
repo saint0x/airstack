@@ -124,7 +124,9 @@ Legend: `✅` done, `✅ (partial)` in progress/partial, `✅ (planned)` not sta
 - ✅ Fly provider wired into metal provider factory
 - ✅ Fly auth fallback (`FLY_API_TOKEN`, `FLY_ACCESS_TOKEN`, flyctl local auth)
 - ✅ Fly inventory surfaced in status output
+- ✅ Fly-native workload inventory surfaced from machine/service metadata
 - ✅ Provider-aware remote command execution for `ssh`, `cexec`, and status probes
+- ✅ Fly-native `cexec` mapping to `flyctl ssh console --container`
 - ✅ Backward-compatible Hetzner path retained
 
 Current implementation focus

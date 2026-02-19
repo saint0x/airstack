@@ -25,7 +25,6 @@ struct FlyApp {
 #[derive(Debug, Clone, Deserialize)]
 struct FlyMachine {
     id: String,
-    name: Option<String>,
     state: Option<String>,
     region: Option<String>,
     private_ip: Option<String>,
@@ -187,10 +186,6 @@ impl FlyProvider {
         format!("{}-{}x{}mb", kind, cpus, mem)
     }
 
-    fn encode_machine_id(app: &str, machine_id: &str) -> String {
-        format!("fly:{}:{}", app, machine_id)
-    }
-
     fn parse_server_id(id: &str) -> Result<(String, Option<String>)> {
         if let Some(rest) = id.strip_prefix("fly:") {
             let mut parts = rest.splitn(2, ':');
@@ -248,32 +243,45 @@ impl FlyProvider {
                 status: Self::map_app_status(app.status.as_deref()),
                 public_ip,
                 private_ip: None,
-                server_type: "fly-app".to_string(),
+                server_type: "fly-app/0-machines".to_string(),
                 region: "global".to_string(),
             }];
         }
 
-        let single = machines.len() == 1;
-        machines
-            .into_iter()
-            .map(|machine| {
-                let display_name = if single {
-                    app.name.clone()
-                } else {
-                    let machine_name = machine.name.clone().unwrap_or_else(|| machine.id.clone());
-                    format!("{}/{}", app.name, machine_name)
-                };
-                Server {
-                    id: Self::encode_machine_id(&app.name, &machine.id),
-                    name: display_name,
-                    status: Self::map_machine_status(machine.state.as_deref()),
-                    public_ip: public_ip.clone(),
-                    private_ip: machine.private_ip.clone(),
-                    server_type: Self::server_type_for_machine(&machine),
-                    region: machine.region.unwrap_or_else(|| "global".to_string()),
-                }
-            })
-            .collect()
+        let mut region = "global".to_string();
+        let mut private_ip = None;
+        let mut status = ServerStatus::Stopped;
+        if let Some(first) = machines.first() {
+            region = first.region.clone().unwrap_or_else(|| "global".to_string());
+            private_ip = first.private_ip.clone();
+            status = Self::map_machine_status(first.state.as_deref());
+        }
+        if machines.iter().any(|m| {
+            matches!(
+                Self::map_machine_status(m.state.as_deref()),
+                ServerStatus::Running
+            )
+        }) {
+            status = ServerStatus::Running;
+        } else if machines.iter().any(|m| {
+            matches!(
+                Self::map_machine_status(m.state.as_deref()),
+                ServerStatus::Creating
+            )
+        }) {
+            status = ServerStatus::Creating;
+        }
+
+        let machine_count = machines.len();
+        vec![Server {
+            id: format!("fly:{}", app.name),
+            name: app.name.clone(),
+            status,
+            public_ip,
+            private_ip,
+            server_type: format!("fly-app/{}-machines", machine_count),
+            region,
+        }]
     }
 }
 
@@ -297,7 +305,7 @@ impl MetalProvider for FlyProvider {
         if let Some(existing_machine) = existing.first() {
             let app_name = request.name.clone();
             return Ok(Server {
-                id: Self::encode_machine_id(&app_name, &existing_machine.id),
+                id: format!("fly:{}", app_name),
                 name: app_name.clone(),
                 status: Self::map_machine_status(existing_machine.state.as_deref()),
                 public_ip: Self::app_public_ip(&self.list_ips(&app_name).await.unwrap_or_default()),
@@ -354,7 +362,7 @@ impl MetalProvider for FlyProvider {
         }
 
         Ok(Server {
-            id: Self::encode_machine_id(&request.name, &machine.id),
+            id: format!("fly:{}", request.name),
             name: request.name.clone(),
             status: Self::map_machine_status(machine.state.as_deref()),
             public_ip: Self::app_public_ip(&self.list_ips(&request.name).await.unwrap_or_default()),
@@ -425,7 +433,7 @@ impl MetalProvider for FlyProvider {
         };
 
         Ok(Server {
-            id: Self::encode_machine_id(&app, &machine.id),
+            id: format!("fly:{}", app),
             name: app.clone(),
             status: Self::map_machine_status(machine.state.as_deref()),
             public_ip: Self::app_public_ip(&self.list_ips(&app).await.unwrap_or_default()),

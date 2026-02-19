@@ -58,7 +58,7 @@ fn shell_escape(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\"'\"'"))
 }
 
-fn join_shell_command(parts: &[String]) -> String {
+pub fn join_shell_command(parts: &[String]) -> String {
     parts
         .iter()
         .map(|part| shell_escape(part))
@@ -66,7 +66,7 @@ fn join_shell_command(parts: &[String]) -> String {
         .join(" ")
 }
 
-fn parse_fly_server_id(id: &str) -> Option<(String, Option<String>)> {
+pub fn parse_fly_server_id(id: &str) -> Option<(String, Option<String>)> {
     let rest = id.strip_prefix("fly:")?;
     let mut parts = rest.splitn(2, ':');
     let app = parts.next()?.to_string();
@@ -77,18 +77,22 @@ fn parse_fly_server_id(id: &str) -> Option<(String, Option<String>)> {
     Some((app, machine))
 }
 
+pub async fn resolve_fly_target(server_cfg: &ServerConfig) -> Result<(String, Option<String>)> {
+    let server = lookup_provider_server(server_cfg).await?;
+    parse_fly_server_id(&server.id).with_context(|| {
+        format!(
+            "Fly server '{}' had unexpected id format '{}'",
+            server_cfg.name, server.id
+        )
+    })
+}
+
 pub async fn execute_remote_command(
     server_cfg: &ServerConfig,
     command: &[String],
 ) -> Result<Output> {
     if server_cfg.provider == "fly" {
-        let server = lookup_provider_server(server_cfg).await?;
-        let (app, machine) = parse_fly_server_id(&server.id).with_context(|| {
-            format!(
-                "Fly server '{}' had unexpected id format '{}'",
-                server_cfg.name, server.id
-            )
-        })?;
+        let (app, machine) = resolve_fly_target(server_cfg).await?;
         let cmd_string = join_shell_command(command);
 
         let mut fly_cmd = Command::new("flyctl");
@@ -127,13 +131,7 @@ pub async fn execute_remote_command(
 
 pub async fn start_remote_session(server_cfg: &ServerConfig, command: &[String]) -> Result<i32> {
     if server_cfg.provider == "fly" {
-        let server = lookup_provider_server(server_cfg).await?;
-        let (app, machine) = parse_fly_server_id(&server.id).with_context(|| {
-            format!(
-                "Fly server '{}' had unexpected id format '{}'",
-                server_cfg.name, server.id
-            )
-        })?;
+        let (app, machine) = resolve_fly_target(server_cfg).await?;
 
         let mut fly_cmd = Command::new("flyctl");
         fly_cmd.arg("ssh");

@@ -1,10 +1,13 @@
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
+use tokio::process::Command;
 use tracing::info;
 
 use crate::output;
-use crate::ssh_utils::{execute_remote_command, start_remote_session};
+use crate::ssh_utils::{
+    execute_remote_command, join_shell_command, resolve_fly_target, start_remote_session,
+};
 
 #[derive(Debug, Serialize)]
 struct ContainerExecOutput {
@@ -37,6 +40,10 @@ pub async fn run(
         "Executing command in remote container '{}' on {} via {}",
         container, server, server_cfg.provider
     );
+
+    if server_cfg.provider == "fly" {
+        return run_fly_container_exec(server, container, server_cfg, command).await;
+    }
 
     if command.is_empty() {
         if output::is_json() {
@@ -89,6 +96,89 @@ pub async fn run(
     if !result.status.success() {
         anyhow::bail!(
             "Remote container command failed with exit code {:?}",
+            result.status.code()
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_fly_container_exec(
+    server: &str,
+    container: &str,
+    server_cfg: &airstack_config::ServerConfig,
+    command: Vec<String>,
+) -> Result<()> {
+    let (app, machine) = resolve_fly_target(server_cfg).await?;
+    if command.is_empty() {
+        if output::is_json() {
+            anyhow::bail!(
+                "Interactive container exec cannot be used with --json. Provide a command."
+            );
+        }
+        let mut fly = Command::new("flyctl");
+        fly.arg("ssh")
+            .arg("console")
+            .arg("--app")
+            .arg(&app)
+            .arg("--container")
+            .arg(container);
+        if let Some(machine) = machine {
+            fly.arg("--machine").arg(machine);
+        }
+        let status = fly
+            .status()
+            .await
+            .context("Failed to start Fly container shell")?;
+        if !status.success() {
+            anyhow::bail!(
+                "Interactive Fly container shell failed with {:?}",
+                status.code()
+            );
+        }
+        return Ok(());
+    }
+
+    let mut fly = Command::new("flyctl");
+    fly.arg("ssh")
+        .arg("console")
+        .arg("--app")
+        .arg(&app)
+        .arg("--container")
+        .arg(container)
+        .arg("--command")
+        .arg(join_shell_command(&command));
+    if let Some(machine) = machine {
+        fly.arg("--machine").arg(machine);
+    }
+    let result = fly
+        .output()
+        .await
+        .context("Failed to execute Fly container command")?;
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+
+    if output::is_json() {
+        output::emit_json(&ContainerExecOutput {
+            server: server.to_string(),
+            container: container.to_string(),
+            command,
+            exit_code: result.status.code().unwrap_or(1),
+            stdout,
+            stderr,
+        })?;
+    } else {
+        if !stdout.is_empty() {
+            print!("{stdout}");
+        }
+        if !stderr.is_empty() {
+            output::error_line(stderr);
+        }
+    }
+
+    if !result.status.success() {
+        anyhow::bail!(
+            "Fly container command failed with exit code {:?}",
             result.status.code()
         );
     }

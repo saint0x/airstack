@@ -155,7 +155,8 @@ Currently supported:
 - **Fly.io Machines** (`fly`)
   - Uses `flyctl` for provider operations
   - Auth resolution order: provider token -> `FLY_API_TOKEN` -> `FLY_ACCESS_TOKEN` -> local `flyctl auth`
-  - Supports app/machine inventory, machine create/destroy, and provider-native SSH (`flyctl ssh console`)
+  - Supports app/machine inventory, machine create/destroy, provider-native SSH (`flyctl ssh console`), and Fly-native workload inventory in `airstack status`
+  - `airstack cexec <fly-server> <container> -- <cmd...>` maps to `flyctl ssh console --container ...`
 
 ### Container Runtimes
 
