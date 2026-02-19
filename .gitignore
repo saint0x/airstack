@@ -1,5 +1,6 @@
 # Rust
 /target/
+/frankentui/target/
 **/*.rs.bk
 
 # Node.js
@@ -37,3 +38,4 @@ Thumbs.db
 example/
 test-*/
 *.toml.bak
+/.fozzy/

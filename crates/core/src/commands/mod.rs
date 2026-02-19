@@ -6,5 +6,9 @@ pub mod logs;
 pub mod scale;
 pub mod ssh;
 pub mod status;
+#[cfg(feature = "tui")]
+pub mod tui;
+#[cfg(not(feature = "tui"))]
+#[path = "tui_stub.rs"]
 pub mod tui;
 pub mod up;

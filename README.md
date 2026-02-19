@@ -100,11 +100,19 @@ airstack status
 
 ### TUI Runtime (FrankenTUI)
 
-Airstack now integrates [FrankenTUI](https://github.com/Dicklesworthstone/frankentui) via git submodule:
+Airstack integrates [FrankenTUI](https://github.com/Dicklesworthstone/frankentui) as an optional Rust feature.
+
+Default builds exclude TUI to keep compile times and binary footprint lower:
 
 ```bash
-git submodule update --init --recursive
-airstack tui
+cargo build -p airstack-core
+```
+
+Enable TUI explicitly when needed:
+
+```bash
+cargo build -p airstack-core --features tui
+cargo run -p airstack-core --features tui -- tui
 ```
 
 Optional view targeting:
@@ -248,7 +256,17 @@ make fmt            # Format code
 - **Metal Providers**: Bare metal server provisioning
 - **Container Providers**: Container orchestration
 - **CLI Core**: Command routing and execution
-- **TypeScript Wrapper**: npm distribution and type safety
+- **TypeScript Wrapper + SDK**: npm distribution, typed config helpers, and binary-backed client API
+
+## TypeScript SDK
+
+```ts
+import { AirstackClient } from 'airstack';
+
+const client = new AirstackClient({ configPath: './airstack.toml' });
+const status = await client.statusJson(true);
+console.log(status);
+```
 
 ## Extending Airstack
 

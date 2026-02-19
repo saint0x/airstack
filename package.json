@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "prepare": "npm run build",
     "postinstall": "node scripts/install-binary.js"
   },
