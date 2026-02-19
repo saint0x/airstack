@@ -101,6 +101,18 @@ enum Commands {
         push: bool,
         #[arg(long, help = "Tag override for --latest-code")]
         tag: Option<String>,
+        #[arg(
+            long,
+            help = "Deploy strategy: rolling|bluegreen|canary",
+            default_value = "rolling"
+        )]
+        strategy: String,
+        #[arg(
+            long,
+            help = "Canary observation window in seconds (strategy=canary)",
+            default_value_t = 45
+        )]
+        canary_seconds: u64,
     },
     #[command(about = "Execute a command inside a container on a remote server")]
     Cexec {
@@ -249,6 +261,8 @@ async fn main() -> Result<()> {
             latest_code,
             push,
             tag,
+            strategy,
+            canary_seconds,
         } => {
             commands::deploy::run(
                 &cli.config,
@@ -258,6 +272,8 @@ async fn main() -> Result<()> {
                 latest_code,
                 push,
                 tag,
+                strategy,
+                canary_seconds,
             )
             .await
         }

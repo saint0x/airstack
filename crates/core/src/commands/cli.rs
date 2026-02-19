@@ -110,6 +110,8 @@ async fn services_menu(
                                 false,
                                 true,
                                 None,
+                                "rolling".to_string(),
+                                45,
                             )
                             .await,
                         );

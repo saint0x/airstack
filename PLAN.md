@@ -34,6 +34,7 @@ Production Expansion Status (current)
 - ✅ Edge TLS/ACME diagnosis with remediation hints (`edge diagnose`)
 - ✅ Status source-of-truth modes (`--source auto|provider|ssh|control-plane`) + mismatch note
 - ✅ Idempotent reconcile command (`reconcile`)
+- ✅ Blue/green + canary deploy strategy primitive (`deploy/ship --strategy ...`)
 
 Implementation Audit (as of February 19, 2026)
 

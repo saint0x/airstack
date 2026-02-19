@@ -1,6 +1,7 @@
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
-    deploy_service, existing_service_image, resolve_target, rollback_service, run_healthcheck,
+    deploy_service_with_strategy, existing_service_image, resolve_target, rollback_service,
+    run_healthcheck, DeployStrategy,
 };
 use crate::output;
 use crate::state::{HealthState, LocalState, ServiceState};
@@ -39,6 +40,8 @@ pub async fn run(
     latest_code: bool,
     push: bool,
     tag: Option<String>,
+    strategy: String,
+    canary_seconds: u64,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
@@ -77,6 +80,7 @@ pub async fn run(
     output::line(format!("🚀 Deploying request: {}", service_name));
 
     let mut deployed = Vec::new();
+    let strategy = DeployStrategy::parse(&strategy)?;
 
     for deploy_name in &order {
         let mut service = services
@@ -96,9 +100,16 @@ pub async fn run(
         let runtime_target = resolve_target(&config, service, allow_local_deploy)?;
         let previous_image = existing_service_image(&runtime_target, deploy_name).await?;
 
-        let mut container = deploy_service(&runtime_target, deploy_name, service)
-            .await
-            .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
+        let mut container = deploy_service_with_strategy(
+            &runtime_target,
+            deploy_name,
+            service,
+            service.healthcheck.as_ref(),
+            strategy,
+            canary_seconds,
+        )
+        .await
+        .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
 
         if let Some(hc) = &service.healthcheck {
             if let Err(err) = run_healthcheck(&runtime_target, deploy_name, hc).await {

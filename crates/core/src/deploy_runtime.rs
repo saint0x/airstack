@@ -22,6 +22,27 @@ pub struct RuntimeDeployResult {
     pub healthy: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub enum DeployStrategy {
+    Rolling,
+    BlueGreen,
+    Canary,
+}
+
+impl DeployStrategy {
+    pub fn parse(input: &str) -> Result<Self> {
+        match input {
+            "rolling" => Ok(Self::Rolling),
+            "bluegreen" => Ok(Self::BlueGreen),
+            "canary" => Ok(Self::Canary),
+            _ => anyhow::bail!(
+                "Invalid deploy strategy '{}'. Expected one of: rolling|bluegreen|canary",
+                input
+            ),
+        }
+    }
+}
+
 pub fn resolve_target(
     config: &AirstackConfig,
     service: &ServiceConfig,
@@ -151,6 +172,67 @@ pub async fn deploy_service(
 
     let launched_id = String::from_utf8_lossy(&run_out.stdout).trim().to_string();
     inspect_service(target, name, Some(launched_id)).await
+}
+
+pub async fn deploy_service_with_strategy(
+    target: &RuntimeTarget,
+    name: &str,
+    service: &ServiceConfig,
+    healthcheck: Option<&HealthcheckConfig>,
+    strategy: DeployStrategy,
+    canary_seconds: u64,
+) -> Result<RuntimeDeployResult> {
+    match strategy {
+        DeployStrategy::Rolling => deploy_service(target, name, service).await,
+        DeployStrategy::BlueGreen | DeployStrategy::Canary => {
+            // Candidate runs without host port bindings to avoid conflicts while validating the new image.
+            let candidate_name = format!("{}__candidate", name);
+            let mut candidate = service.clone();
+            candidate.ports = Vec::new();
+
+            let _ = deploy_service(target, &candidate_name, &candidate).await?;
+
+            if let Some(hc) = healthcheck {
+                if let Err(err) = run_healthcheck(target, &candidate_name, hc).await {
+                    let _ = run_shell(
+                        target,
+                        &format!("docker rm -f {} >/dev/null 2>&1 || true", candidate_name),
+                    )
+                    .await;
+                    return Err(err).with_context(|| {
+                        format!(
+                            "Candidate validation failed for '{}' with strategy {:?}",
+                            name, strategy
+                        )
+                    });
+                }
+            }
+
+            if strategy == DeployStrategy::Canary && canary_seconds > 0 {
+                sleep(Duration::from_secs(canary_seconds)).await;
+            }
+
+            let promoted = match deploy_service(target, name, service).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = run_shell(
+                        target,
+                        &format!("docker rm -f {} >/dev/null 2>&1 || true", candidate_name),
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
+
+            let _ = run_shell(
+                target,
+                &format!("docker rm -f {} >/dev/null 2>&1 || true", candidate_name),
+            )
+            .await;
+
+            Ok(promoted)
+        }
+    }
 }
 
 pub async fn rollback_service(

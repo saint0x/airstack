@@ -1,5 +1,6 @@
 use crate::deploy_runtime::{
-    deploy_service, existing_service_image, resolve_target, rollback_service, run_healthcheck,
+    deploy_service_with_strategy, existing_service_image, resolve_target, rollback_service,
+    run_healthcheck, DeployStrategy,
 };
 use crate::output;
 use airstack_config::AirstackConfig;
@@ -27,6 +28,18 @@ pub struct ShipArgs {
     pub update_config: bool,
     #[arg(long, help = "Allow local deploys even when infra servers exist")]
     pub allow_local_deploy: bool,
+    #[arg(
+        long,
+        help = "Deploy strategy: rolling|bluegreen|canary",
+        default_value = "rolling"
+    )]
+    pub strategy: String,
+    #[arg(
+        long,
+        help = "Canary observation window in seconds (strategy=canary)",
+        default_value_t = 45
+    )]
+    pub canary_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,15 +78,23 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     }
 
     // Deploy phase
+    let strategy = DeployStrategy::parse(&args.strategy)?;
     let target = resolve_target(&config, service_cfg, args.allow_local_deploy)?;
     let previous_image = existing_service_image(&target, &args.service).await?;
     let mut deploy_cfg = service_cfg.clone();
     deploy_cfg.image = final_image.clone();
 
     let mut rolled_back = false;
-    let mut deployed = deploy_service(&target, &args.service, &deploy_cfg)
-        .await
-        .with_context(|| format!("Failed deploying ship image for '{}'", args.service))?;
+    let mut deployed = deploy_service_with_strategy(
+        &target,
+        &args.service,
+        &deploy_cfg,
+        service_cfg.healthcheck.as_ref(),
+        strategy,
+        args.canary_seconds,
+    )
+    .await
+    .with_context(|| format!("Failed deploying ship image for '{}'", args.service))?;
 
     if let Some(hc) = &service_cfg.healthcheck {
         if let Err(err) = run_healthcheck(&target, &args.service, hc).await {

@@ -85,7 +85,7 @@ airstack status
 | `airstack init [name]` | Initialize a new project |
 | `airstack up` | Provision infrastructure |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>]` | Deploy a service (optional latest-code build mode) |
+| `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (optional latest-code + strategy mode) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
@@ -105,7 +105,7 @@ airstack status
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
 | `airstack release &lt;service&gt; [--push] [--update-config]` | Build/publish release images |
-| `airstack ship &lt;service&gt; [--push --update-config]` | Atomic release+deploy with rollback on deploy failure |
+| `airstack ship &lt;service&gt; [--push --update-config] [--strategy rolling\|bluegreen\|canary]` | Atomic release+deploy with rollback on deploy failure |
 
 ### Output Modes
 
