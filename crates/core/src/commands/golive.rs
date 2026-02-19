@@ -1,5 +1,7 @@
 use crate::commands::edge;
-use crate::deploy_runtime::{preflight_image_access, resolve_target, run_healthcheck};
+use crate::deploy_runtime::{
+    preflight_image_access, resolve_target, run_healthcheck, run_http_health_probe,
+};
 use crate::output;
 use airstack_config::AirstackConfig;
 use airstack_metal::get_provider as get_metal_provider;
@@ -198,7 +200,23 @@ async fn app_health_checks(config: &AirstackConfig, checks: &mut Vec<ReadinessCh
             Ok(target) => {
                 match run_healthcheck(&target, name, hc).await {
                     Ok(_) => passed.push(name.clone()),
-                    Err(e) => failures.push(format!("{}: {}", name, e)),
+                    Err(e) => {
+                        if let Some(port) = svc.ports.first().copied() {
+                            match run_http_health_probe(&target, port, hc.timeout_secs).await {
+                                Ok(_) => {
+                                    passed.push(format!("{name} (via /health fallback on :{port})"))
+                                }
+                                Err(http_err) => {
+                                    failures.push(format!(
+                                        "{}: {}; fallback probe failed: {}",
+                                        name, e, http_err
+                                    ));
+                                }
+                            }
+                        } else {
+                            failures.push(format!("{}: {}", name, e));
+                        }
+                    }
                 };
             }
             Err(e) => failures.push(format!("{}: target resolution failed ({})", name, e)),

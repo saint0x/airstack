@@ -254,21 +254,42 @@ pub async fn run_healthcheck(
 ) -> Result<()> {
     let retries = healthcheck.retries.unwrap_or(10);
     let interval = Duration::from_secs(healthcheck.interval_secs.unwrap_or(5));
-
-    let cmd = join_shell_command(&healthcheck.command);
-    let check_script = format!("docker exec {} sh -lc {}", name, shell_quote(&cmd));
+    let mut check_parts = vec!["docker".to_string(), "exec".to_string(), name.to_string()];
+    check_parts.extend(healthcheck.command.clone());
+    let check_script = join_shell_command(&check_parts);
 
     let mut last_err = String::new();
-    for _ in 0..retries {
+    for _attempt in 0..retries {
         let out = run_shell(target, &check_script).await?;
         if out.status.success() {
             return Ok(());
         }
-        last_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        last_err = summarize_process_failure(&out);
         sleep(interval).await;
     }
 
     anyhow::bail!("Healthcheck failed for service '{}': {}", name, last_err)
+}
+
+pub async fn run_http_health_probe(
+    target: &RuntimeTarget,
+    port: u16,
+    timeout_secs: Option<u64>,
+) -> Result<()> {
+    let timeout = timeout_secs.unwrap_or(5);
+    let url = format!("http://127.0.0.1:{port}/health");
+    let script = format!(
+        "(curl -fsS --max-time {timeout} {url} >/dev/null 2>&1) || (wget -q --timeout={timeout} -O- {url} >/dev/null 2>&1)"
+    );
+    let out = run_shell(target, &script).await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "HTTP /health probe failed for {}: {}",
+        url,
+        summarize_process_failure(&out)
+    );
 }
 
 pub async fn preflight_image_access(target: &RuntimeTarget, image: &str) -> Result<()> {
@@ -398,4 +419,58 @@ async fn run_shell(target: &RuntimeTarget, script: &str) -> Result<Output> {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn summarize_process_failure(output: &Output) -> String {
+    let code = output
+        .status
+        .code()
+        .map_or_else(|| "signal".to_string(), |c| c.to_string());
+    let stderr = limit_output(String::from_utf8_lossy(&output.stderr).trim());
+    let stdout = limit_output(String::from_utf8_lossy(&output.stdout).trim());
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => format!("exit={code}"),
+        (false, true) => format!("exit={code} stderr={stderr}"),
+        (true, false) => format!("exit={code} stdout={stdout}"),
+        (false, false) => format!("exit={code} stderr={stderr} stdout={stdout}"),
+    }
+}
+
+fn limit_output(value: &str) -> String {
+    const MAX: usize = 300;
+    if value.chars().count() <= MAX {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(MAX).collect();
+    format!("{truncated}...")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summarize_process_failure;
+    use std::process::Command;
+
+    #[test]
+    fn summarize_failure_includes_stderr_when_present() {
+        let out = Command::new("sh")
+            .arg("-lc")
+            .arg("echo boom >&2; exit 7")
+            .output()
+            .expect("command should run");
+        let summary = summarize_process_failure(&out);
+        assert!(summary.contains("exit=7"));
+        assert!(summary.contains("stderr=boom"));
+    }
+
+    #[test]
+    fn summarize_failure_uses_stdout_when_stderr_empty() {
+        let out = Command::new("sh")
+            .arg("-lc")
+            .arg("echo nope; exit 3")
+            .output()
+            .expect("command should run");
+        let summary = summarize_process_failure(&out);
+        assert!(summary.contains("exit=3"));
+        assert!(summary.contains("stdout=nope"));
+    }
 }
