@@ -121,7 +121,7 @@ struct TuiSummary {
 #[derive(Debug, Clone)]
 enum TuiMessage {
     Input(Event),
-    Refreshed(Result<TuiSummary, String>),
+    Refreshed(Box<Result<TuiSummary, String>>),
 }
 
 impl From<Event> for TuiMessage {
@@ -213,13 +213,13 @@ impl Model for AirstackTuiApp {
             TuiMessage::Input(Event::Tick) => {
                 self.ticks = self.ticks.wrapping_add(1);
                 let mut cmds = vec![Cmd::tick(ANIMATION_TICK_INTERVAL)];
-                if self.ticks % REFRESH_EVERY_TICKS == 0 {
+                if self.ticks.is_multiple_of(REFRESH_EVERY_TICKS) {
                     cmds.push(refresh_cmd(self.config_path.clone()));
                 }
                 Cmd::batch(cmds)
             }
             TuiMessage::Refreshed(result) => {
-                match result {
+                match *result {
                     Ok(summary) => {
                         self.summary = summary;
                     }
@@ -351,7 +351,11 @@ pub async fn run(config_path: &str, view: Option<String>) -> Result<()> {
 }
 
 fn refresh_cmd(config_path: String) -> Cmd<TuiMessage> {
-    Cmd::task(move || TuiMessage::Refreshed(load_summary(&config_path).map_err(|e| e.to_string())))
+    Cmd::task(move || {
+        TuiMessage::Refreshed(Box::new(
+            load_summary(&config_path).map_err(|e| e.to_string()),
+        ))
+    })
 }
 
 fn load_summary(config_path: &str) -> Result<TuiSummary> {

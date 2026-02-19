@@ -52,3 +52,21 @@ pub fn get_provider(
         _ => anyhow::bail!("Unsupported metal provider: {}", provider_name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::get_provider;
+    use std::collections::HashMap;
+
+    #[test]
+    fn rejects_unsupported_provider() {
+        let err = match get_provider("nope", HashMap::new()) {
+            Ok(_) => panic!("expected unsupported provider error"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("Unsupported metal provider"),
+            "unexpected error: {err}"
+        );
+    }
+}

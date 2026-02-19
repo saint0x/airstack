@@ -59,3 +59,20 @@ pub fn get_provider(provider_name: &str) -> Result<Box<dyn ContainerProvider>> {
         _ => anyhow::bail!("Unsupported container provider: {}", provider_name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::get_provider;
+
+    #[test]
+    fn rejects_unsupported_provider() {
+        let err = match get_provider("nope") {
+            Ok(_) => panic!("expected unsupported provider error"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("Unsupported container provider"),
+            "unexpected error: {err}"
+        );
+    }
+}

@@ -124,3 +124,102 @@ volumes = ["./data:/var/lib/postgresql/data"]
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_path(filename: &str) -> std::path::PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!("airstack-config-tests-{now}-{filename}"))
+    }
+
+    fn base_config() -> AirstackConfig {
+        AirstackConfig {
+            project: ProjectConfig {
+                name: "demo".to_string(),
+                description: None,
+            },
+            infra: Some(InfraConfig {
+                servers: vec![ServerConfig {
+                    name: "web".to_string(),
+                    provider: "hetzner".to_string(),
+                    region: "nbg1".to_string(),
+                    server_type: "cx21".to_string(),
+                    ssh_key: "~/.ssh/id_ed25519.pub".to_string(),
+                    floating_ip: Some(false),
+                }],
+            }),
+            services: Some(HashMap::from([(
+                "api".to_string(),
+                ServiceConfig {
+                    image: "nginx:latest".to_string(),
+                    ports: vec![80],
+                    env: None,
+                    volumes: None,
+                    depends_on: None,
+                },
+            )])),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_empty_project_name() {
+        let mut cfg = base_config();
+        cfg.project.name.clear();
+        let err = cfg.validate().expect_err("expected validation error");
+        assert!(
+            err.to_string().contains("Project name cannot be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_server_provider() {
+        let mut cfg = base_config();
+        cfg.infra
+            .as_mut()
+            .expect("infra should exist")
+            .servers
+            .first_mut()
+            .expect("one server expected")
+            .provider
+            .clear();
+        let err = cfg.validate().expect_err("expected validation error");
+        assert!(
+            err.to_string().contains("Server provider cannot be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty_service_image() {
+        let mut cfg = base_config();
+        cfg.services
+            .as_mut()
+            .expect("services should exist")
+            .get_mut("api")
+            .expect("api service should exist")
+            .image
+            .clear();
+        let err = cfg.validate().expect_err("expected validation error");
+        assert!(
+            err.to_string().contains("Service image cannot be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn init_example_writes_loadable_config() {
+        let path = unique_path("example.toml");
+        AirstackConfig::init_example(&path).expect("example config should write");
+        let loaded = AirstackConfig::load(&path).expect("example config should parse");
+        assert_eq!(loaded.project.name, "my-project");
+        fs::remove_file(&path).expect("cleanup should succeed");
+    }
+}

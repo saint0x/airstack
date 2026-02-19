@@ -95,3 +95,72 @@ pub fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
 
     Ok(None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{build_ssh_command, resolve_identity_path, SshCommandOptions};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_dir() -> std::path::PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!("airstack-ssh-utils-{now}"))
+    }
+
+    #[test]
+    fn resolve_identity_path_ignores_non_path_keys() {
+        let resolved = resolve_identity_path("my-key-name").expect("resolution should not fail");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_identity_path_prefers_private_key_for_pub_path() {
+        let dir = unique_dir();
+        fs::create_dir_all(&dir).expect("temp dir creation should succeed");
+        let private = dir.join("id_ed25519");
+        let public = dir.join("id_ed25519.pub");
+        fs::write(&private, "PRIVATE").expect("private key write should succeed");
+        fs::write(&public, "PUBLIC").expect("public key write should succeed");
+
+        let resolved = resolve_identity_path(&public.to_string_lossy())
+            .expect("resolution should not fail")
+            .expect("private key should be selected");
+        assert_eq!(resolved, private);
+
+        fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
+    }
+
+    #[test]
+    fn build_ssh_command_includes_target_and_options() {
+        let cmd = build_ssh_command(
+            "",
+            "203.0.113.10",
+            &SshCommandOptions {
+                user: "root",
+                batch_mode: true,
+                connect_timeout_secs: Some(7),
+                strict_host_key_checking: "accept-new",
+                user_known_hosts_file: None,
+                log_level: "ERROR",
+            },
+        )
+        .expect("command build should succeed");
+
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|v| v.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.contains(&"BatchMode=yes".to_string()));
+        assert!(args.contains(&"ConnectTimeout=7".to_string()));
+        assert!(args.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(args.contains(&"LogLevel=ERROR".to_string()));
+        assert!(
+            args.last().is_some_and(|last| last == "root@203.0.113.10"),
+            "expected target at end, args: {args:?}"
+        );
+    }
+}

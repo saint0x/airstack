@@ -151,7 +151,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .post(&format!("{}/servers", self.base_url))
+            .post(format!("{}/servers", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .json(&payload)
             .send()
@@ -189,7 +189,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .delete(&format!("{}/servers/{}", self.base_url, id))
+            .delete(format!("{}/servers/{}", self.base_url, id))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .send()
             .await
@@ -209,7 +209,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .get(&format!("{}/servers/{}", self.base_url, id))
+            .get(format!("{}/servers/{}", self.base_url, id))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .send()
             .await
@@ -234,7 +234,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .get(&format!("{}/servers", self.base_url))
+            .get(format!("{}/servers", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .send()
             .await
@@ -274,7 +274,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .post(&format!("{}/ssh_keys", self.base_url))
+            .post(format!("{}/ssh_keys", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .json(&payload)
             .send()
@@ -313,7 +313,7 @@ impl MetalProvider for HetznerProvider {
 
         let response = self
             .client
-            .post(&format!("{}/floating_ips", self.base_url))
+            .post(format!("{}/floating_ips", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_token))
             .json(&payload)
             .send()
