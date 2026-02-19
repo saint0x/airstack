@@ -211,11 +211,7 @@ async fn inspect_service(target: &RuntimeTarget, name: &str) -> Result<RuntimeDe
         })
         .unwrap_or_default();
 
-    Ok(RuntimeDeployResult {
-        id,
-        status,
-        ports,
-    })
+    Ok(RuntimeDeployResult { id, status, ports })
 }
 
 async fn run_shell(target: &RuntimeTarget, script: &str) -> Result<Output> {

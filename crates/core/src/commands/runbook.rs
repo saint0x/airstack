@@ -14,12 +14,17 @@ pub async fn run(config_path: &str) -> Result<()> {
     output::line("   airstack plan");
     output::line("4. Apply changes");
     output::line("   airstack apply");
-    output::line("5. Service troubleshooting");
+    output::line("5. Build and publish release image");
+    output::line("   airstack release <service> --push --update-config");
+    output::line("6. Service troubleshooting");
     output::line("   airstack logs <service> --follow");
     output::line("   airstack ssh <server>");
+    output::line("7. Secrets and backup operations");
+    output::line("   airstack secrets list");
+    output::line("   airstack backup status");
 
     if config.edge.is_some() {
-        output::line("6. Edge checks");
+        output::line("8. Edge checks");
         output::line("   airstack edge validate");
         output::line("   airstack edge status");
     }

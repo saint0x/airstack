@@ -8,6 +8,7 @@ mod dependencies;
 mod deploy_runtime;
 mod output;
 mod retry;
+mod secrets_store;
 mod ssh_utils;
 mod state;
 mod theme;
@@ -154,6 +155,18 @@ enum Commands {
     Doctor,
     #[command(about = "Print operational runbook for this stack")]
     Runbook,
+    #[command(about = "Manage encrypted project secrets")]
+    Secrets {
+        #[command(subcommand)]
+        command: commands::secrets::SecretsCommands,
+    },
+    #[command(about = "Managed backup lifecycle commands")]
+    Backup {
+        #[command(subcommand)]
+        command: commands::backup::BackupCommands,
+    },
+    #[command(about = "Build/publish release image for a service")]
+    Release(commands::release::ReleaseArgs),
 }
 
 #[tokio::main]
@@ -232,5 +245,8 @@ async fn main() -> Result<()> {
         Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
         Commands::Doctor => commands::doctor::run(&cli.config).await,
         Commands::Runbook => commands::runbook::run(&cli.config).await,
+        Commands::Secrets { command } => commands::secrets::run(&cli.config, command).await,
+        Commands::Backup { command } => commands::backup::run(&cli.config, command).await,
+        Commands::Release(args) => commands::release::run(&cli.config, args).await,
     }
 }

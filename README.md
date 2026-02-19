@@ -98,6 +98,9 @@ airstack status
 | `airstack edge <plan|apply|validate|status>` | Reverse-proxy workflows |
 | `airstack doctor` | Validate production safety and policy checks |
 | `airstack runbook` | Print operational command runbook |
+| `airstack secrets <set|get|list|delete>` | Encrypted local secrets management |
+| `airstack backup <enable|status|restore>` | Managed backup lifecycle |
+| `airstack release <service> [--push] [--update-config]` | Build/publish release images |
 
 ### Output Modes
 

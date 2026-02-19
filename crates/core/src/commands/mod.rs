@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod backup;
 pub mod cexec;
 pub mod cli;
 pub mod deploy;
@@ -8,8 +9,10 @@ pub mod edge;
 pub mod init;
 pub mod logs;
 pub mod plan;
+pub mod release;
 pub mod runbook;
 pub mod scale;
+pub mod secrets;
 pub mod ssh;
 pub mod status;
 #[cfg(feature = "tui")]

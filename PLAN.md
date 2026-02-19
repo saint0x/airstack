@@ -21,6 +21,9 @@ Production Expansion Status (current)
 - ✅ Environment overlays via `--env <name>` and `airstack.<name>.toml`
 - ✅ Edge primitive command surface: `edge plan|apply|validate|status` (Caddy-first)
 - ✅ `airstack doctor` policy checks and `airstack runbook` operational guide
+- ✅ Encrypted-at-rest local secrets primitives (`secrets set|get|list|delete`)
+- ✅ Managed backup command surface (`backup enable|status|restore`)
+- ✅ Release pipeline primitive (`release <service> --push --update-config`)
 
 Implementation Audit (as of February 19, 2026)
 

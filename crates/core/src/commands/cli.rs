@@ -87,7 +87,11 @@ async fn services_menu(
     service_names: &[String],
 ) -> Result<()> {
     loop {
-        let choice = select_index(theme, "Services", &["Deploy", "Scale", "Logs", "Back"])?;
+        let choice = select_index(
+            theme,
+            "Services",
+            &["Deploy", "Scale", "Logs", "Release", "Back"],
+        )?;
         match choice {
             0 => {
                 let mut options = service_names.to_vec();
@@ -130,7 +134,36 @@ async fn services_menu(
                     );
                 }
             }
-            3 => break,
+            3 => {
+                if let Some(service) =
+                    select_from_list_with_back(theme, "Select service to release", service_names)?
+                {
+                    let push = Confirm::with_theme(theme)
+                        .with_prompt("Push image after build")
+                        .default(false)
+                        .interact()
+                        .context("Failed to read push option")?;
+                    let update_config = Confirm::with_theme(theme)
+                        .with_prompt("Update config image reference")
+                        .default(true)
+                        .interact()
+                        .context("Failed to read update-config option")?;
+                    let tag = read_optional(theme, "Tag (blank = git sha)")?;
+                    run_and_continue(
+                        commands::release::run(
+                            config_path,
+                            commands::release::ReleaseArgs {
+                                service,
+                                tag,
+                                push,
+                                update_config,
+                            },
+                        )
+                        .await,
+                    );
+                }
+            }
+            4 => break,
             _ => {}
         }
     }
@@ -142,14 +175,17 @@ async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
         let choice = select_index(
             theme,
             "Planning & Safety",
-            &["Plan", "Apply", "Doctor", "Runbook", "Back"],
+            &["Plan", "Apply", "Doctor", "Runbook", "Secrets List", "Back"],
         )?;
         match choice {
             0 => run_and_continue(commands::plan::run(config_path, false).await),
             1 => run_and_continue(commands::apply::run(config_path, false).await),
             2 => run_and_continue(commands::doctor::run(config_path).await),
             3 => run_and_continue(commands::runbook::run(config_path).await),
-            4 => break,
+            4 => run_and_continue(
+                commands::secrets::run(config_path, commands::secrets::SecretsCommands::List).await,
+            ),
+            5 => break,
             _ => {}
         }
     }
