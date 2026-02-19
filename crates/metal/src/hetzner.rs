@@ -60,11 +60,24 @@ struct HetznerResponse<T> {
     server: Option<T>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct HetznerSshKey {
+    id: u64,
+    name: String,
+    public_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HetznerSshKeysResponse {
+    ssh_keys: Option<Vec<HetznerSshKey>>,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateServerPayload {
     name: String,
     server_type: String,
     location: String,
+    image: String,
     ssh_keys: Vec<String>,
     public_net: CreateServerPublicNet,
 }
@@ -122,6 +135,38 @@ impl HetznerProvider {
             region: hetzner_server.datacenter.location.name,
         }
     }
+
+    async fn find_existing_ssh_key_id(
+        &self,
+        name: &str,
+        public_key: &str,
+    ) -> Result<Option<String>> {
+        let response = self
+            .client
+            .get(format!("{}/ssh_keys", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await
+            .context("Failed to send list SSH keys request")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to list SSH keys: {}", error_text);
+        }
+
+        let result: HetznerSshKeysResponse = response
+            .json()
+            .await
+            .context("Failed to parse list SSH keys response")?;
+
+        let found = result
+            .ssh_keys
+            .unwrap_or_default()
+            .into_iter()
+            .find(|k| k.name == name || k.public_key.trim() == public_key);
+
+        Ok(found.map(|k| k.id.to_string()))
+    }
 }
 
 #[async_trait::async_trait]
@@ -152,6 +197,8 @@ impl MetalProvider for HetznerProvider {
             name: request.name.clone(),
             server_type: request.server_type,
             location: request.region,
+            // Hetzner API requires image in create payload.
+            image: "ubuntu-24.04".to_string(),
             ssh_keys: vec![ssh_key_name],
             public_net: CreateServerPublicNet {
                 enable_ipv4: true,
@@ -293,6 +340,18 @@ impl MetalProvider for HetznerProvider {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            if error_text.contains("uniqueness_error") {
+                if let Some(existing_id) = self
+                    .find_existing_ssh_key_id(name, public_key.trim())
+                    .await?
+                {
+                    info!(
+                        "SSH key already exists; reusing id {} for key {}",
+                        existing_id, name
+                    );
+                    return Ok(existing_id);
+                }
+            }
             anyhow::bail!("Failed to upload SSH key: {}", error_text);
         }
 

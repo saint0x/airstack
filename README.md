@@ -85,22 +85,22 @@ airstack status
 | `airstack init [name]` | Initialize a new project |
 | `airstack up` | Provision infrastructure |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy <service>` | Deploy a service |
-| `airstack cexec <server> <container> [cmd...]` | Execute a command inside a remote container |
-| `airstack scale <service> <replicas>` | Scale service replicas |
+| `airstack deploy &lt;service&gt;` | Deploy a service |
+| `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
+| `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack status` | Show status |
-| `airstack ssh <server>` | SSH into a server |
-| `airstack logs <service>` | Show service logs |
+| `airstack ssh &lt;server&gt;` | SSH into a server |
+| `airstack logs &lt;service&gt;` | Show service logs |
 | `airstack plan` | Preview create/update/destroy and deploy actions |
 | `airstack apply` | Apply desired infrastructure and services |
-| `airstack edge <plan|apply|validate|status>` | Reverse-proxy workflows |
+| `airstack edge &lt;plan|apply|validate|status&gt;` | Reverse-proxy workflows |
 | `airstack doctor` | Validate production safety and policy checks |
 | `airstack runbook` | Print operational command runbook |
-| `airstack secrets <set|get|list|delete>` | Encrypted local secrets management |
-| `airstack backup <enable|status|restore>` | Managed backup lifecycle |
-| `airstack release <service> [--push] [--update-config]` | Build/publish release images |
+| `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
+| `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
+| `airstack release &lt;service&gt; [--push] [--update-config]` | Build/publish release images |
 
 ### Output Modes
 
