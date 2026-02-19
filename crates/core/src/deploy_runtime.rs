@@ -73,7 +73,7 @@ pub fn resolve_target(
 pub async fn existing_service_image(target: &RuntimeTarget, name: &str) -> Result<Option<String>> {
     let output = run_shell(
         target,
-        &format!("docker ps -a --filter name=^/{name}$ --format '{{{{.Image}}}}' | head -n 1"),
+        &format!("docker inspect -f '{{{{.Config.Image}}}}' {name} 2>/dev/null || true"),
     )
     .await?;
 
@@ -126,7 +126,13 @@ pub async fn deploy_service(
     run_parts.push(service.image.clone());
 
     let script = format!(
-        "docker rm -f {name} >/dev/null 2>&1 || true; {}",
+        "docker rm -f {name} >/dev/null 2>&1 || true; \
+         for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+           docker container inspect {name} >/dev/null 2>&1 || break; \
+           docker rm -f {name} >/dev/null 2>&1 || true; \
+           sleep 0.2; \
+         done; \
+         {}",
         join_shell_command(&run_parts)
     );
 
@@ -136,7 +142,8 @@ pub async fn deploy_service(
         anyhow::bail!("Failed to deploy service '{}': {}", name, stderr.trim());
     }
 
-    inspect_service(target, name).await
+    let launched_id = String::from_utf8_lossy(&run_out.stdout).trim().to_string();
+    inspect_service(target, name, Some(launched_id)).await
 }
 
 pub async fn rollback_service(
@@ -175,11 +182,21 @@ pub async fn run_healthcheck(
     anyhow::bail!("Healthcheck failed for service '{}': {}", name, last_err)
 }
 
-async fn inspect_service(target: &RuntimeTarget, name: &str) -> Result<RuntimeDeployResult> {
+async fn inspect_service(
+    target: &RuntimeTarget,
+    name: &str,
+    launched_id: Option<String>,
+) -> Result<RuntimeDeployResult> {
+    let inspect_id = launched_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(name);
+
     let inspect = run_shell(
         target,
         &format!(
-            "docker ps -a --filter name=^/{name}$ --format '{{{{.ID}}}}|{{{{.Image}}}}|{{{{.Status}}}}|{{{{.Ports}}}}' | head -n 1"
+            "docker ps -a --filter id={inspect_id} --format '{{{{.ID}}}}|{{{{.Image}}}}|{{{{.Status}}}}|{{{{.Ports}}}}' | head -n 1"
         ),
     )
     .await?;
@@ -195,9 +212,25 @@ async fn inspect_service(target: &RuntimeTarget, name: &str) -> Result<RuntimeDe
 
     let line = String::from_utf8_lossy(&inspect.stdout).trim().to_string();
     if line.is_empty() {
-        anyhow::bail!("Deployed service '{}' was not found after deploy", name);
+        // Fallback by name for runtimes that don't return a stable ID on stdout.
+        let by_name = run_shell(
+            target,
+            &format!(
+                "docker ps -a --filter name=/{name}$ --format '{{{{.ID}}}}|{{{{.Image}}}}|{{{{.Status}}}}|{{{{.Ports}}}}' | head -n 1"
+            ),
+        )
+        .await?;
+        let fallback_line = String::from_utf8_lossy(&by_name.stdout).trim().to_string();
+        if fallback_line.is_empty() {
+            anyhow::bail!("Deployed service '{}' was not found after deploy", name);
+        }
+        return parse_inspect_line(&fallback_line);
     }
 
+    parse_inspect_line(&line)
+}
+
+fn parse_inspect_line(line: &str) -> Result<RuntimeDeployResult> {
     let parts: Vec<&str> = line.split('|').collect();
     let id = parts.first().copied().unwrap_or_default().to_string();
     let status = parts.get(2).copied().unwrap_or_default().to_string();

@@ -125,7 +125,7 @@ pub async fn execute_remote_command(
             log_level: "ERROR",
         },
     )?;
-    ssh_cmd.args(command);
+    ssh_cmd.arg(join_shell_command(command));
     ssh_cmd.output().context("Failed to execute SSH command")
 }
 
@@ -165,7 +165,9 @@ pub async fn start_remote_session(server_cfg: &ServerConfig, command: &[String])
             log_level: "ERROR",
         },
     )?;
-    ssh_cmd.args(command);
+    if !command.is_empty() {
+        ssh_cmd.arg(join_shell_command(command));
+    }
     let status = ssh_cmd.status().context("Failed to start SSH session")?;
     Ok(status.code().unwrap_or(1))
 }

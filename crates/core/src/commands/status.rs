@@ -539,18 +539,39 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 async fn inspect_remote_containers_for_server(
     server_cfg: &ServerConfig,
 ) -> Result<Vec<RemoteContainerRecord>> {
-    let command = vec![
-        "sh".to_string(),
-        "-lc".to_string(),
-        "docker ps --format '{{json .}}'".to_string(),
+    let scripts = [
+        "docker ps --format '{{json .}}'",
+        "sudo -n docker ps --format '{{json .}}'",
+        "podman ps --format '{{json .}}'",
+        "sudo -n podman ps --format '{{json .}}'",
     ];
-    let out = execute_remote_command(server_cfg, &command).await?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::bail!("remote docker ps failed: {}", stderr.trim());
+
+    let mut last_err = String::new();
+    for script in scripts {
+        let out = execute_remote_command(
+            server_cfg,
+            &["sh".to_string(), "-lc".to_string(), script.to_string()],
+        )
+        .await?;
+
+        if out.status.success() {
+            return parse_remote_container_lines(server_cfg, &out.stdout);
+        }
+
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            last_err = stderr;
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    anyhow::bail!("remote container inventory failed: {}", last_err);
+}
+
+fn parse_remote_container_lines(
+    server_cfg: &ServerConfig,
+    stdout: &[u8],
+) -> Result<Vec<RemoteContainerRecord>> {
+    let stdout = String::from_utf8_lossy(stdout);
     let mut items = Vec::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
         let parsed: DockerPsLine = serde_json::from_str(line).with_context(|| {
