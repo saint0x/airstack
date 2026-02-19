@@ -85,22 +85,27 @@ airstack status
 | `airstack init [name]` | Initialize a new project |
 | `airstack up` | Provision infrastructure |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy &lt;service&gt;` | Deploy a service |
+| `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>]` | Deploy a service (optional latest-code build mode) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
-| `airstack status` | Show status |
+| `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode |
 | `airstack ssh &lt;server&gt;` | SSH into a server |
 | `airstack logs &lt;service&gt;` | Show service logs |
 | `airstack plan` | Preview create/update/destroy and deploy actions |
 | `airstack apply` | Apply desired infrastructure and services |
 | `airstack edge &lt;plan|apply|validate|status&gt;` | Reverse-proxy workflows |
+| `airstack edge diagnose` | TLS/ACME diagnosis with remediation hints |
 | `airstack doctor` | Validate production safety and policy checks |
+| `airstack drift` | Detect config image tag vs running image drift |
+| `airstack registry doctor [--server <name>] --image <image>` | Verify remote registry pull credentials/scope |
+| `airstack reconcile [--dry-run] [--detailed]` | Idempotent converge-to-config workflow |
 | `airstack runbook` | Print operational command runbook |
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
 | `airstack release &lt;service&gt; [--push] [--update-config]` | Build/publish release images |
+| `airstack ship &lt;service&gt; [--push --update-config]` | Atomic release+deploy with rollback on deploy failure |
 
 ### Output Modes
 

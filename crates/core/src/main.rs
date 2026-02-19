@@ -91,6 +91,16 @@ enum Commands {
         service: String,
         #[arg(long, help = "Target server")]
         target: Option<String>,
+        #[arg(long, help = "Build latest local code into image before deploy")]
+        latest_code: bool,
+        #[arg(
+            long,
+            default_value_t = true,
+            help = "Push image when using --latest-code"
+        )]
+        push: bool,
+        #[arg(long, help = "Tag override for --latest-code")]
+        tag: Option<String>,
     },
     #[command(about = "Execute a command inside a container on a remote server")]
     Cexec {
@@ -122,6 +132,12 @@ enum Commands {
     Status {
         #[arg(long, help = "Show detailed status")]
         detailed: bool,
+        #[arg(
+            long,
+            help = "Status source-of-truth mode: auto|provider|ssh|control-plane",
+            default_value = "auto"
+        )]
+        source: String,
     },
     #[command(about = "SSH into a server")]
     Ssh {
@@ -153,6 +169,15 @@ enum Commands {
     },
     #[command(about = "Run production safety checks")]
     Doctor,
+    #[command(about = "Check image drift between config and running runtime")]
+    Drift,
+    #[command(about = "Registry credential diagnostics")]
+    Registry {
+        #[command(subcommand)]
+        command: commands::registry::RegistryCommands,
+    },
+    #[command(about = "Converge runtime state to desired TOML state")]
+    Reconcile(commands::reconcile::ReconcileArgs),
     #[command(about = "Print operational runbook for this stack")]
     Runbook,
     #[command(about = "Manage encrypted project secrets")]
@@ -167,6 +192,8 @@ enum Commands {
     },
     #[command(about = "Build/publish release image for a service")]
     Release(commands::release::ReleaseArgs),
+    #[command(about = "Atomic latest-code ship (build/push/deploy with rollback)")]
+    Ship(commands::ship::ShipArgs),
 }
 
 #[tokio::main]
@@ -216,8 +243,23 @@ async fn main() -> Result<()> {
         Commands::Destroy { target, force } => {
             commands::destroy::run(&cli.config, target, force || cli.yes).await
         }
-        Commands::Deploy { service, target } => {
-            commands::deploy::run(&cli.config, &service, target, cli.allow_local_deploy).await
+        Commands::Deploy {
+            service,
+            target,
+            latest_code,
+            push,
+            tag,
+        } => {
+            commands::deploy::run(
+                &cli.config,
+                &service,
+                target,
+                cli.allow_local_deploy,
+                latest_code,
+                push,
+                tag,
+            )
+            .await
         }
         Commands::Cexec {
             server,
@@ -229,7 +271,9 @@ async fn main() -> Result<()> {
         }
         Commands::Cli => commands::cli::run(&cli.config).await,
         Commands::Tui { view } => commands::tui::run(&cli.config, view).await,
-        Commands::Status { detailed } => commands::status::run(&cli.config, detailed).await,
+        Commands::Status { detailed, source } => {
+            commands::status::run(&cli.config, detailed, &source).await
+        }
         Commands::Ssh { target, command } => {
             commands::ssh::run(&cli.config, &target, command).await
         }
@@ -244,9 +288,19 @@ async fn main() -> Result<()> {
         Commands::Apply => commands::apply::run(&cli.config, cli.allow_local_deploy).await,
         Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
         Commands::Doctor => commands::doctor::run(&cli.config).await,
+        Commands::Drift => commands::drift::run(&cli.config).await,
+        Commands::Registry { command } => commands::registry::run(&cli.config, command).await,
+        Commands::Reconcile(mut args) => {
+            args.allow_local_deploy = cli.allow_local_deploy;
+            commands::reconcile::run(&cli.config, args).await
+        }
         Commands::Runbook => commands::runbook::run(&cli.config).await,
         Commands::Secrets { command } => commands::secrets::run(&cli.config, command).await,
         Commands::Backup { command } => commands::backup::run(&cli.config, command).await,
         Commands::Release(args) => commands::release::run(&cli.config, args).await,
+        Commands::Ship(mut args) => {
+            args.allow_local_deploy = cli.allow_local_deploy;
+            commands::ship::run(&cli.config, args).await
+        }
     }
 }

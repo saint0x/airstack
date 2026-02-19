@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde::Serialize;
 use std::net::ToSocketAddrs;
+use tokio::process::Command;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum EdgeCommands {
@@ -16,6 +17,8 @@ pub enum EdgeCommands {
     Validate,
     #[command(about = "Show edge status")]
     Status,
+    #[command(about = "Diagnose TLS/ACME edge issues with remediation hints")]
+    Diagnose,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +43,7 @@ pub async fn run(config_path: &str, command: EdgeCommands) -> Result<()> {
         EdgeCommands::Plan => plan(edge),
         EdgeCommands::Validate => validate(edge),
         EdgeCommands::Status => status(edge),
+        EdgeCommands::Diagnose => diagnose(edge).await,
         EdgeCommands::Apply => apply(&config).await,
     }
 }
@@ -110,6 +114,88 @@ fn status(edge: &airstack_config::EdgeConfig) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct EdgeDiagnosis {
+    host: String,
+    dns_resolved: bool,
+    tls_handshake_ok: bool,
+    remediation: Vec<String>,
+}
+
+async fn diagnose(edge: &airstack_config::EdgeConfig) -> Result<()> {
+    let mut rows = Vec::new();
+    for site in &edge.sites {
+        let dns_ok = (site.host.as_str(), 443)
+            .to_socket_addrs()
+            .map(|mut a| a.next().is_some())
+            .unwrap_or(false);
+
+        let mut tls_ok = false;
+        let mut remediation = Vec::new();
+        if !dns_ok {
+            remediation.push(format!(
+                "DNS: ensure A/AAAA for '{}' points to edge host before ACME issuance",
+                site.host
+            ));
+        } else {
+            let out = Command::new("sh")
+                .arg("-lc")
+                .arg(format!(
+                    "echo | openssl s_client -connect {h}:443 -servername {h} -brief 2>/dev/null",
+                    h = site.host
+                ))
+                .output()
+                .await
+                .context("Failed to run openssl for edge diagnosis")?;
+            tls_ok = out.status.success();
+            if !tls_ok {
+                remediation.push(format!(
+                    "TLS: verify port 443 open and Caddy running, then run `airstack edge apply`"
+                ));
+                remediation.push(format!(
+                    "ACME: check Caddy logs (`journalctl -u caddy -n 200`) for challenge failure details"
+                ));
+            }
+        }
+
+        if site.tls_email.is_none() {
+            remediation.push(format!(
+                "Config: set tls_email for '{}' to improve ACME ops visibility",
+                site.host
+            ));
+        }
+
+        rows.push(EdgeDiagnosis {
+            host: site.host.clone(),
+            dns_resolved: dns_ok,
+            tls_handshake_ok: tls_ok,
+            remediation,
+        });
+    }
+
+    if output::is_json() {
+        output::emit_json(&serde_json::json!({ "diagnosis": rows }))?;
+    } else {
+        output::line("🩺 Edge Diagnose");
+        for row in &rows {
+            let ok = row.dns_resolved && row.tls_handshake_ok;
+            let mark = if ok { "✅" } else { "❌" };
+            output::line(format!(
+                "{} {} dns={} tls={}",
+                mark, row.host, row.dns_resolved, row.tls_handshake_ok
+            ));
+            for hint in &row.remediation {
+                output::line(format!("   - {}", hint));
+            }
+        }
+    }
+
+    if rows.iter().any(|r| !r.dns_resolved || !r.tls_handshake_ok) {
+        anyhow::bail!("edge diagnose found actionable issues")
+    }
     Ok(())
 }
 

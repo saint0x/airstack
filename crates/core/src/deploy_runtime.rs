@@ -1,6 +1,7 @@
 use crate::ssh_utils::{execute_remote_command, join_shell_command};
 use airstack_config::{AirstackConfig, HealthcheckConfig, ServerConfig, ServiceConfig};
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::process::Output;
 use tokio::time::{sleep, Duration};
 
@@ -10,11 +11,15 @@ pub enum RuntimeTarget {
     Remote(ServerConfig),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeDeployResult {
     pub id: String,
     pub status: String,
     pub ports: Vec<String>,
+    pub running: bool,
+    pub discoverable: bool,
+    pub detected_by: String,
+    pub healthy: Option<bool>,
 }
 
 pub fn resolve_target(
@@ -94,6 +99,8 @@ pub async fn deploy_service(
     name: &str,
     service: &ServiceConfig,
 ) -> Result<RuntimeDeployResult> {
+    preflight_image_access(target, &service.image).await?;
+
     let mut run_parts = vec![
         "docker".to_string(),
         "run".to_string(),
@@ -182,6 +189,31 @@ pub async fn run_healthcheck(
     anyhow::bail!("Healthcheck failed for service '{}': {}", name, last_err)
 }
 
+pub async fn preflight_image_access(target: &RuntimeTarget, image: &str) -> Result<()> {
+    let script = format!(
+        "docker image inspect {img} >/dev/null 2>&1 || docker pull {img}",
+        img = shell_quote(image)
+    );
+    let out = run_shell(target, &script).await?;
+    if out.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let mut hint = String::new();
+    if image.starts_with("ghcr.io/") {
+        hint =
+            " Hint: ensure remote host has GHCR credentials (`docker login ghcr.io`) with read:packages scope."
+                .to_string();
+    }
+    anyhow::bail!(
+        "Image preflight failed for '{}': {}.{}",
+        image,
+        stderr,
+        hint
+    );
+}
+
 async fn inspect_service(
     target: &RuntimeTarget,
     name: &str,
@@ -224,13 +256,13 @@ async fn inspect_service(
         if fallback_line.is_empty() {
             anyhow::bail!("Deployed service '{}' was not found after deploy", name);
         }
-        return parse_inspect_line(&fallback_line);
+        return parse_inspect_line(&fallback_line, "name");
     }
 
-    parse_inspect_line(&line)
+    parse_inspect_line(&line, "id")
 }
 
-fn parse_inspect_line(line: &str) -> Result<RuntimeDeployResult> {
+fn parse_inspect_line(line: &str, detected_by: &str) -> Result<RuntimeDeployResult> {
     let parts: Vec<&str> = line.split('|').collect();
     let id = parts.first().copied().unwrap_or_default().to_string();
     let status = parts.get(2).copied().unwrap_or_default().to_string();
@@ -244,7 +276,18 @@ fn parse_inspect_line(line: &str) -> Result<RuntimeDeployResult> {
         })
         .unwrap_or_default();
 
-    Ok(RuntimeDeployResult { id, status, ports })
+    let s = status.to_ascii_lowercase();
+    let running = s.starts_with("up") || s.contains("running") || s.contains("started");
+
+    Ok(RuntimeDeployResult {
+        id,
+        status,
+        ports,
+        running,
+        discoverable: true,
+        detected_by: detected_by.to_string(),
+        healthy: None,
+    })
 }
 
 async fn run_shell(target: &RuntimeTarget, script: &str) -> Result<Output> {

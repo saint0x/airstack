@@ -50,6 +50,7 @@ struct RemoteContainerRecord {
 struct StatusOutput {
     project: String,
     description: Option<String>,
+    source_mode: String,
     infrastructure: Vec<ServerStatusRecord>,
     services: Vec<ServiceStatusRecord>,
     remote_containers: Vec<RemoteContainerRecord>,
@@ -96,10 +97,43 @@ struct FlyMachinePort {
     handlers: Option<Vec<String>>,
 }
 
-pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceMode {
+    Auto,
+    Provider,
+    Ssh,
+    ControlPlane,
+}
+
+impl SourceMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "provider" => Ok(Self::Provider),
+            "ssh" => Ok(Self::Ssh),
+            "control-plane" => Ok(Self::ControlPlane),
+            _ => anyhow::bail!(
+                "Invalid --source '{}'. Expected one of: auto|provider|ssh|control-plane",
+                value
+            ),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Provider => "provider",
+            Self::Ssh => "ssh",
+            Self::ControlPlane => "control-plane",
+        }
+    }
+}
+
+pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
     let drift = state.detect_drift(&config);
+    let source_mode = SourceMode::parse(source)?;
 
     info!("Checking status for project: {}", config.project.name);
 
@@ -109,6 +143,7 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     if !output::is_json() {
         output::line("📊 Airstack Status Report");
         output::line(format!("Project: {}", config.project.name));
+        output::line(format!("Source Mode: {}", source_mode.as_str()));
         if let Some(desc) = &config.project.description {
             output::line(format!("Description: {}", desc));
         }
@@ -275,17 +310,19 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     let mut remote_containers = Vec::new();
     if let Some(infra) = &config.infra {
         let mut probe_set = JoinSet::new();
-        for server_cfg in &infra.servers {
-            let cfg = server_cfg.clone();
-            probe_set.spawn(async move {
-                let server_name = cfg.name.clone();
-                let result = if cfg.provider == "fly" {
-                    inspect_fly_workloads_for_server(&cfg).await
-                } else {
-                    inspect_remote_containers_for_server(&cfg).await
-                };
-                (server_name, result)
-            });
+        if source_mode == SourceMode::Auto || source_mode == SourceMode::Ssh {
+            for server_cfg in &infra.servers {
+                let cfg = server_cfg.clone();
+                probe_set.spawn(async move {
+                    let server_name = cfg.name.clone();
+                    let result = if cfg.provider == "fly" {
+                        inspect_fly_workloads_for_server(&cfg).await
+                    } else {
+                        inspect_remote_containers_for_server(&cfg).await
+                    };
+                    (server_name, result)
+                });
+            }
         }
 
         let mut probe_results: HashMap<String, Result<Vec<RemoteContainerRecord>>> = HashMap::new();
@@ -321,9 +358,45 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
             output::line("🚀 Services Status:");
         }
 
-        let local_container_provider = get_container_provider("docker").ok();
+        let local_container_provider =
+            if source_mode == SourceMode::Auto || source_mode == SourceMode::ControlPlane {
+                get_container_provider("docker").ok()
+            } else {
+                None
+            };
+        let mut local_observed: HashMap<String, (String, String)> = HashMap::new();
+        if let Some(container_provider) = &local_container_provider {
+            for service_name in services.keys() {
+                if let Ok(container) = container_provider.get_container(service_name).await {
+                    local_observed.insert(
+                        service_name.clone(),
+                        (container.image, format!("{:?}", container.status)),
+                    );
+                }
+            }
+        }
 
         for (service_name, service_config) in services {
+            if source_mode == SourceMode::Provider {
+                let checked_at = unix_now();
+                service_records.push(ServiceStatusRecord {
+                    name: service_name.clone(),
+                    status: "ProviderOnly".to_string(),
+                    cached_health: state
+                        .services
+                        .get(service_name)
+                        .map(|s| s.health.as_str().to_string()),
+                    cached_last_checked_unix: Some(checked_at),
+                    image: Some(service_config.image.clone()),
+                    ports: Vec::new(),
+                    note: Some(
+                        "provider mode does not inspect container runtime; use --source ssh|auto|control-plane"
+                            .to_string(),
+                    ),
+                });
+                continue;
+            }
+
             if let Some(remote) = remote_containers.iter().find(|c| c.name == *service_name) {
                 let checked_at = unix_now();
                 let health = map_remote_container_health(&remote.status);
@@ -360,7 +433,19 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(remote.image.clone()),
                     ports: remote.ports.clone(),
-                    note: Some(format!("remote container on {}", remote.server)),
+                    note: local_observed
+                        .get(service_name)
+                        .and_then(|(local_image, local_status)| {
+                            if local_image != &remote.image || local_status != &remote.status {
+                                Some(format!(
+                                    "mismatch: ssh={} [{}] local={} [{}]",
+                                    remote.image, remote.status, local_image, local_status
+                                ))
+                            } else {
+                                None
+                            }
+                        })
+                        .or_else(|| Some(format!("remote container on {}", remote.server))),
                 });
                 continue;
             }
@@ -492,6 +577,7 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
         output::emit_json(&StatusOutput {
             project: config.project.name,
             description: config.project.description,
+            source_mode: source_mode.as_str().to_string(),
             infrastructure: infra_records,
             services: service_records,
             remote_containers,

@@ -7,6 +7,8 @@ use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::process::Command;
 use tracing::info;
 
 #[derive(Debug, Serialize)]
@@ -15,6 +17,11 @@ struct DeployRecord {
     container_id: String,
     status: String,
     ports: Vec<String>,
+    deployed: bool,
+    running: bool,
+    healthy: Option<bool>,
+    discoverable: bool,
+    detected_by: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +36,9 @@ pub async fn run(
     service_name: &str,
     _target: Option<String>,
     allow_local_deploy: bool,
+    latest_code: bool,
+    push: bool,
+    tag: Option<String>,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
@@ -46,14 +56,37 @@ pub async fn run(
         deployment_order(services, Some(service_name))?
     };
 
+    let mut image_overrides: HashMap<String, String> = HashMap::new();
+    if latest_code {
+        if service_name == "all" {
+            anyhow::bail!("--latest-code requires an explicit single service, not 'all'");
+        }
+        let svc = services
+            .get(service_name)
+            .with_context(|| format!("Service '{}' not found in configuration", service_name))?;
+        let base_image = svc.image.split(':').next().unwrap_or(&svc.image);
+        let resolved_tag = tag.unwrap_or(git_sha()?);
+        let built_image = format!("{}:{}", base_image, resolved_tag);
+        run_cmd("docker", &["build", "-t", &built_image, "."])?;
+        if push {
+            run_cmd("docker", &["push", &built_image])?;
+        }
+        image_overrides.insert(service_name.to_string(), built_image);
+    }
+
     output::line(format!("🚀 Deploying request: {}", service_name));
 
     let mut deployed = Vec::new();
 
     for deploy_name in &order {
-        let service = services
+        let mut service = services
             .get(deploy_name.as_str())
             .with_context(|| format!("Service '{}' not found in configuration", deploy_name))?;
+        let mut service_override = service.clone();
+        if let Some(image) = image_overrides.get(deploy_name) {
+            service_override.image = image.clone();
+            service = &service_override;
+        }
 
         output::line(format!(
             "   {} -> {} (ports: {:?})",
@@ -63,12 +96,13 @@ pub async fn run(
         let runtime_target = resolve_target(&config, service, allow_local_deploy)?;
         let previous_image = existing_service_image(&runtime_target, deploy_name).await?;
 
-        let container = deploy_service(&runtime_target, deploy_name, service)
+        let mut container = deploy_service(&runtime_target, deploy_name, service)
             .await
             .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
 
         if let Some(hc) = &service.healthcheck {
             if let Err(err) = run_healthcheck(&runtime_target, deploy_name, hc).await {
+                container.healthy = Some(false);
                 if let Some(prev) = &previous_image {
                     let _ = rollback_service(&runtime_target, deploy_name, prev, service).await;
                 }
@@ -79,6 +113,9 @@ pub async fn run(
                     )
                 });
             }
+            container.healthy = Some(true);
+        } else {
+            container.healthy = None;
         }
 
         output::line(format!(
@@ -91,6 +128,11 @@ pub async fn run(
             container_id: container.id.clone(),
             status: container.status.clone(),
             ports: container.ports.clone(),
+            deployed: true,
+            running: container.running,
+            healthy: container.healthy,
+            discoverable: container.discoverable,
+            detected_by: container.detected_by.clone(),
         });
 
         state.services.insert(
@@ -123,6 +165,28 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(cmd)
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to execute {}", cmd))?;
+    if !status.success() {
+        anyhow::bail!("Command failed: {} {}", cmd, args.join(" "));
+    }
+    Ok(())
+}
+
+fn git_sha() -> Result<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .context("Failed to execute git rev-parse")?;
+    if !out.status.success() {
+        anyhow::bail!("Failed to determine git SHA");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn map_container_health_text(status: &str) -> HealthState {

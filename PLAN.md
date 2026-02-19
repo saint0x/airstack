@@ -24,6 +24,16 @@ Production Expansion Status (current)
 - ✅ Encrypted-at-rest local secrets primitives (`secrets set|get|list|delete`)
 - ✅ Managed backup command surface (`backup enable|status|restore`)
 - ✅ Release pipeline primitive (`release <service> --push --update-config`)
+- ✅ First-class latest-code deploy mode (`deploy --latest-code --push --tag`)
+- ✅ Atomic release+deploy workflow with rollback (`ship <service>`)
+- ✅ Preflight image pull/auth check before stop/recreate
+- ✅ Structured deploy outcome fields (`deployed`, `running`, `healthy`, `discoverable`)
+- ✅ Remote registry credential doctor (`registry doctor --image ...`)
+- ✅ Safer SSH command quoting/argument transport
+- ✅ Drift check command for desired image vs running image (`drift`)
+- ✅ Edge TLS/ACME diagnosis with remediation hints (`edge diagnose`)
+- ✅ Status source-of-truth modes (`--source auto|provider|ssh|control-plane`) + mismatch note
+- ✅ Idempotent reconcile command (`reconcile`)
 
 Implementation Audit (as of February 19, 2026)
 
