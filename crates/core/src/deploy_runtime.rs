@@ -1,5 +1,8 @@
 use crate::ssh_utils::{execute_remote_command, join_shell_command};
-use airstack_config::{AirstackConfig, HealthcheckConfig, ServerConfig, ServiceConfig};
+use airstack_config::{
+    AirstackConfig, HealthcheckConfig, HttpHealthcheckConfig, ServerConfig, ServiceConfig,
+    TcpHealthcheckConfig,
+};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::process::Output;
@@ -20,6 +23,23 @@ pub struct RuntimeDeployResult {
     pub discoverable: bool,
     pub detected_by: String,
     pub healthy: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthProbeRecord {
+    pub profile: String,
+    pub command: String,
+    pub ok: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthEvaluation {
+    pub ok: bool,
+    pub detail: String,
+    pub records: Vec<HealthProbeRecord>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -193,7 +213,24 @@ pub async fn deploy_service_with_strategy(
             let _ = deploy_service(target, &candidate_name, &candidate).await?;
 
             if let Some(hc) = healthcheck {
-                if let Err(err) = run_healthcheck(target, &candidate_name, hc).await {
+                let mut health_service = service.clone();
+                health_service.healthcheck = Some(hc.clone());
+                if let Err(err) = evaluate_service_health(
+                    target,
+                    &candidate_name,
+                    &health_service,
+                    false,
+                    1,
+                    false,
+                )
+                .await
+                .and_then(|eval| {
+                    if eval.ok {
+                        Ok(())
+                    } else {
+                        anyhow::bail!("{}", eval.detail)
+                    }
+                }) {
                     let _ = run_shell(
                         target,
                         &format!("docker rm -f {} >/dev/null 2>&1 || true", candidate_name),
@@ -252,23 +289,22 @@ pub async fn run_healthcheck(
     name: &str,
     healthcheck: &HealthcheckConfig,
 ) -> Result<()> {
-    let retries = healthcheck.retries.unwrap_or(10);
-    let interval = Duration::from_secs(healthcheck.interval_secs.unwrap_or(5));
-    let mut check_parts = vec!["docker".to_string(), "exec".to_string(), name.to_string()];
-    check_parts.extend(healthcheck.command.clone());
-    let check_script = join_shell_command(&check_parts);
-
-    let mut last_err = String::new();
-    for _attempt in 0..retries {
-        let out = run_shell(target, &check_script).await?;
-        if out.status.success() {
-            return Ok(());
-        }
-        last_err = summarize_process_failure(&out);
-        sleep(interval).await;
+    let service = ServiceConfig {
+        image: String::new(),
+        ports: Vec::new(),
+        env: None,
+        volumes: None,
+        depends_on: None,
+        target_server: None,
+        healthcheck: Some(healthcheck.clone()),
+        profile: None,
+    };
+    let evaluation = evaluate_service_health(target, name, &service, false, 1, false).await?;
+    if evaluation.ok {
+        Ok(())
+    } else {
+        anyhow::bail!("{}", evaluation.detail)
     }
-
-    anyhow::bail!("Healthcheck failed for service '{}': {}", name, last_err)
 }
 
 pub async fn run_http_health_probe(
@@ -290,6 +326,213 @@ pub async fn run_http_health_probe(
         url,
         summarize_process_failure(&out)
     );
+}
+
+pub async fn evaluate_service_health(
+    target: &RuntimeTarget,
+    service_name: &str,
+    service: &ServiceConfig,
+    explain: bool,
+    stability_runs: u32,
+    jitter: bool,
+) -> Result<HealthEvaluation> {
+    let Some(healthcheck) = &service.healthcheck else {
+        return Ok(HealthEvaluation {
+            ok: true,
+            detail: "missing healthcheck (skipped)".to_string(),
+            records: Vec::new(),
+        });
+    };
+
+    let runs = stability_runs.max(1);
+    let mut run_summaries = Vec::new();
+    let mut all_records = Vec::new();
+    let mut overall_ok = true;
+
+    for run_idx in 1..=runs {
+        let mut records = Vec::new();
+        let ok = evaluate_profile(
+            target,
+            service_name,
+            service,
+            healthcheck,
+            "root",
+            &mut records,
+        )
+        .await?;
+        if !ok {
+            overall_ok = false;
+        }
+        run_summaries.push(format!("run#{run_idx}:{}", if ok { "ok" } else { "fail" }));
+        if explain {
+            all_records.extend(records);
+        }
+        if jitter && run_idx < runs {
+            let pause_ms = ((run_idx as u64 * 137) % 400) + 100;
+            sleep(Duration::from_millis(pause_ms)).await;
+        }
+    }
+
+    let detail = if overall_ok {
+        format!("Healthcheck passed for service '{service_name}'")
+    } else {
+        format!(
+            "Healthcheck failed for service '{service_name}': {}",
+            run_summaries.join(", ")
+        )
+    };
+
+    Ok(HealthEvaluation {
+        ok: overall_ok,
+        detail,
+        records: all_records,
+    })
+}
+
+fn evaluate_profile<'a>(
+    target: &'a RuntimeTarget,
+    service_name: &'a str,
+    service: &'a ServiceConfig,
+    hc: &'a HealthcheckConfig,
+    profile_name: &'a str,
+    records: &'a mut Vec<HealthProbeRecord>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + 'a>> {
+    Box::pin(async move {
+        if let Some(all_profiles) = &hc.all {
+            let mut ok = true;
+            for (idx, child) in all_profiles.iter().enumerate() {
+                let child_name = format!("{profile_name}.all[{idx}]");
+                if !evaluate_profile(target, service_name, service, child, &child_name, records)
+                    .await?
+                {
+                    ok = false;
+                }
+            }
+            return Ok(ok);
+        }
+
+        if let Some(any_profiles) = &hc.any {
+            let mut ok = false;
+            for (idx, child) in any_profiles.iter().enumerate() {
+                let child_name = format!("{profile_name}.any[{idx}]");
+                if evaluate_profile(target, service_name, service, child, &child_name, records)
+                    .await?
+                {
+                    ok = true;
+                }
+            }
+            return Ok(ok);
+        }
+
+        let retries = hc.retries.unwrap_or(10);
+        let interval = Duration::from_secs(hc.interval_secs.unwrap_or(5));
+        let mut last_record = None;
+
+        for _ in 0..retries {
+            let record = if !hc.command.is_empty() {
+                execute_command_probe(target, service_name, &hc.command, profile_name).await?
+            } else if let Some(http) = &hc.http {
+                execute_http_probe(target, service_name, service, hc, http, profile_name).await?
+            } else if let Some(tcp) = &hc.tcp {
+                execute_tcp_probe(target, hc, tcp, profile_name).await?
+            } else {
+                anyhow::bail!(
+                    "No executable health profile for service '{}'",
+                    service_name
+                );
+            };
+            let ok = record.ok;
+            last_record = Some(record.clone());
+            records.push(record);
+            if ok {
+                return Ok(true);
+            }
+            sleep(interval).await;
+        }
+
+        if let Some(last) = last_record {
+            records.push(last);
+        }
+        Ok(false)
+    })
+}
+
+async fn execute_command_probe(
+    target: &RuntimeTarget,
+    service_name: &str,
+    command: &[String],
+    profile_name: &str,
+) -> Result<HealthProbeRecord> {
+    let mut parts = vec![
+        "docker".to_string(),
+        "exec".to_string(),
+        service_name.to_string(),
+    ];
+    parts.extend(command.to_vec());
+    let script = join_shell_command(&parts);
+    let out = run_shell(target, &script).await?;
+    Ok(to_probe_record(profile_name, script, out))
+}
+
+async fn execute_http_probe(
+    target: &RuntimeTarget,
+    service_name: &str,
+    service: &ServiceConfig,
+    hc: &HealthcheckConfig,
+    http: &HttpHealthcheckConfig,
+    profile_name: &str,
+) -> Result<HealthProbeRecord> {
+    let timeout = http.timeout_secs.or(hc.timeout_secs).unwrap_or(5);
+    let expected = http.expected_status.unwrap_or(200);
+    let url = if let Some(url) = &http.url {
+        url.clone()
+    } else {
+        let port = http
+            .port
+            .or_else(|| service.ports.first().copied())
+            .context("http healthcheck requires `http.port` or service ports")?;
+        let path = http.path.clone().unwrap_or_else(|| "/health".to_string());
+        format!("http://127.0.0.1:{port}{path}")
+    };
+
+    let script = format!(
+        "code=$(curl -sS -o /dev/null -w '%{{http_code}}' --max-time {timeout} {url} || true); [ \"$code\" = \"{expected}\" ]"
+    );
+    let out = run_shell(target, &script).await?;
+    Ok(to_probe_record(
+        profile_name,
+        format!("probe[{service_name}] {script}"),
+        out,
+    ))
+}
+
+async fn execute_tcp_probe(
+    target: &RuntimeTarget,
+    hc: &HealthcheckConfig,
+    tcp: &TcpHealthcheckConfig,
+    profile_name: &str,
+) -> Result<HealthProbeRecord> {
+    let timeout = tcp.timeout_secs.or(hc.timeout_secs).unwrap_or(5);
+    let host = tcp.host.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+    let script = format!(
+        "nc -z -w {timeout} {host} {port}",
+        timeout = timeout,
+        host = shell_quote(&host),
+        port = tcp.port
+    );
+    let out = run_shell(target, &script).await?;
+    Ok(to_probe_record(profile_name, script, out))
+}
+
+fn to_probe_record(profile_name: &str, command: String, out: Output) -> HealthProbeRecord {
+    HealthProbeRecord {
+        profile: profile_name.to_string(),
+        command,
+        ok: out.status.success(),
+        exit_code: out.status.code(),
+        stdout: limit_output(String::from_utf8_lossy(&out.stdout).trim()),
+        stderr: limit_output(String::from_utf8_lossy(&out.stderr).trim()),
+    }
 }
 
 pub async fn preflight_image_access(target: &RuntimeTarget, image: &str) -> Result<()> {

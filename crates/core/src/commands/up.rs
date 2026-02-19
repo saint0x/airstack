@@ -9,7 +9,8 @@ use tracing::{info, warn};
 use crate::commands::edge;
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
-    deploy_service, existing_service_image, resolve_target, rollback_service, run_healthcheck,
+    deploy_service, evaluate_service_health, existing_service_image, resolve_target,
+    rollback_service,
 };
 use crate::output;
 use crate::retry::retry_with_backoff;
@@ -203,11 +204,30 @@ pub async fn run(
                 .await
                 .with_context(|| format!("Failed to deploy service {}", service_name))?;
 
-            if let Some(hc) = &service.healthcheck {
-                if let Err(err) = run_healthcheck(&runtime_target, &service_name, hc).await {
+            if service.healthcheck.is_some() {
+                if let Err(err) = evaluate_service_health(
+                    &runtime_target,
+                    &service_name,
+                    service,
+                    false,
+                    1,
+                    false,
+                )
+                .await
+                .and_then(|eval| {
+                    if eval.ok {
+                        Ok(())
+                    } else {
+                        anyhow::bail!("{}", eval.detail)
+                    }
+                }) {
                     if let Some(prev) = &previous_image {
                         let _ =
                             rollback_service(&runtime_target, &service_name, prev, service).await;
+                        output::line(format!(
+                            "↩️ rollback target for {} -> image {}",
+                            service_name, prev
+                        ));
                     }
                     return Err(err).with_context(|| {
                         format!(

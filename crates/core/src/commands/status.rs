@@ -8,6 +8,7 @@ use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
+use crate::deploy_runtime::{evaluate_service_health, resolve_target};
 use crate::output;
 use crate::ssh_utils::execute_remote_command;
 use crate::state::{DriftReport, HealthState, LocalState, ServerState, ServiceState};
@@ -33,6 +34,7 @@ struct ServiceStatusRecord {
     cached_last_checked_unix: Option<u64>,
     image: Option<String>,
     ports: Vec<String>,
+    active_probe: Option<String>,
     note: Option<String>,
 }
 
@@ -115,7 +117,7 @@ impl SourceMode {
     }
 }
 
-pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> {
+pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
     let drift = state.detect_drift(&config);
@@ -363,6 +365,11 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
         }
 
         for (service_name, service_config) in services {
+            let active_probe = if probe {
+                Some(run_active_probe(&config, service_name, service_config).await)
+            } else {
+                None
+            };
             if source_mode == SourceMode::Provider {
                 let checked_at = unix_now();
                 service_records.push(ServiceStatusRecord {
@@ -375,6 +382,7 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
                     ports: Vec::new(),
+                    active_probe: active_probe.clone(),
                     note: Some(
                         "provider mode does not inspect container runtime; use --source ssh|auto|control-plane"
                             .to_string(),
@@ -411,6 +419,9 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                         if !remote.ports.is_empty() {
                             output::line(format!("      Ports: {}", remote.ports.join(", ")));
                         }
+                        if let Some(probe_status) = &active_probe {
+                            output::line(format!("      Probe: {}", probe_status));
+                        }
                     }
                 }
 
@@ -421,6 +432,7 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(remote.image.clone()),
                     ports: remote.ports.clone(),
+                    active_probe: active_probe.clone(),
                     note: local_observed
                         .get(service_name)
                         .and_then(|(local_image, local_status)| {
@@ -483,6 +495,7 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                                     })
                                 })
                                 .collect(),
+                            active_probe: active_probe.clone(),
                             note: Some("local docker daemon".to_string()),
                         });
                     }
@@ -518,6 +531,7 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                             cached_last_checked_unix: Some(checked_at),
                             image: Some(service_config.image.clone()),
                             ports: Vec::new(),
+                            active_probe: active_probe.clone(),
                             note: Some("container not found".to_string()),
                         });
                     }
@@ -531,6 +545,7 @@ pub async fn run(config_path: &str, detailed: bool, source: &str) -> Result<()> 
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
                     ports: Vec::new(),
+                    active_probe: active_probe.clone(),
                     note: Some("container provider init failed".to_string()),
                 });
             }
@@ -849,6 +864,29 @@ fn map_remote_container_health(status: &str) -> HealthState {
         HealthState::Degraded
     } else {
         HealthState::Unhealthy
+    }
+}
+
+async fn run_active_probe(
+    config: &AirstackConfig,
+    service_name: &str,
+    service_cfg: &airstack_config::ServiceConfig,
+) -> String {
+    match resolve_target(config, service_cfg, false) {
+        Ok(target) => {
+            match evaluate_service_health(&target, service_name, service_cfg, false, 1, false).await
+            {
+                Ok(eval) => {
+                    if eval.ok {
+                        "ok".to_string()
+                    } else {
+                        format!("fail: {}", eval.detail)
+                    }
+                }
+                Err(e) => format!("error: {}", e),
+            }
+        }
+        Err(e) => format!("target-error: {}", e),
     }
 }
 

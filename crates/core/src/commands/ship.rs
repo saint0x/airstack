@@ -1,7 +1,7 @@
 use crate::commands::edge;
 use crate::deploy_runtime::{
-    deploy_service_with_strategy, existing_service_image, resolve_target, rollback_service,
-    run_healthcheck, DeployStrategy,
+    deploy_service_with_strategy, evaluate_service_health, existing_service_image, resolve_target,
+    rollback_service, DeployStrategy,
 };
 use crate::output;
 use airstack_config::AirstackConfig;
@@ -97,12 +97,26 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     .await
     .with_context(|| format!("Failed deploying ship image for '{}'", args.service))?;
 
-    if let Some(hc) = &service_cfg.healthcheck {
-        if let Err(err) = run_healthcheck(&target, &args.service, hc).await {
+    if service_cfg.healthcheck.is_some() {
+        if let Err(err) =
+            evaluate_service_health(&target, &args.service, service_cfg, false, 1, false)
+                .await
+                .and_then(|eval| {
+                    if eval.ok {
+                        Ok(())
+                    } else {
+                        anyhow::bail!("{}", eval.detail)
+                    }
+                })
+        {
             deployed.healthy = Some(false);
             if let Some(prev) = &previous_image {
                 let _ = rollback_service(&target, &args.service, prev, service_cfg).await;
                 rolled_back = true;
+                output::line(format!(
+                    "↩️ rollback target for {} -> image {}",
+                    args.service, prev
+                ));
             }
             return Err(err).with_context(|| {
                 format!(

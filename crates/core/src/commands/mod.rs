@@ -20,6 +20,7 @@ pub mod secrets;
 pub mod ship;
 pub mod ssh;
 pub mod status;
+pub mod support_bundle;
 #[cfg(feature = "tui")]
 pub mod tui;
 #[cfg(not(feature = "tui"))]

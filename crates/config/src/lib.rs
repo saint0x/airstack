@@ -47,9 +47,30 @@ pub struct ServiceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthcheckConfig {
+    #[serde(default)]
     pub command: Vec<String>,
     pub interval_secs: Option<u64>,
     pub retries: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub http: Option<HttpHealthcheckConfig>,
+    pub tcp: Option<TcpHealthcheckConfig>,
+    pub any: Option<Vec<HealthcheckConfig>>,
+    pub all: Option<Vec<HealthcheckConfig>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpHealthcheckConfig {
+    pub url: Option<String>,
+    pub path: Option<String>,
+    pub port: Option<u16>,
+    pub expected_status: Option<u16>,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpHealthcheckConfig {
+    pub host: Option<String>,
+    pub port: u16,
     pub timeout_secs: Option<u64>,
 }
 
@@ -132,8 +153,16 @@ impl AirstackConfig {
                     anyhow::bail!("Service image cannot be empty for service: {}", name);
                 }
                 if let Some(hc) = &service.healthcheck {
-                    if hc.command.is_empty() {
-                        anyhow::bail!("Healthcheck command cannot be empty for service: {}", name);
+                    let has_cmd = !hc.command.is_empty();
+                    let has_http = hc.http.is_some();
+                    let has_tcp = hc.tcp.is_some();
+                    let has_any = hc.any.as_ref().is_some_and(|v| !v.is_empty());
+                    let has_all = hc.all.as_ref().is_some_and(|v| !v.is_empty());
+                    if !(has_cmd || has_http || has_tcp || has_any || has_all) {
+                        anyhow::bail!(
+                            "Healthcheck for service '{}' must include one of: command/http/tcp/any/all",
+                            name
+                        );
                     }
                 }
             }

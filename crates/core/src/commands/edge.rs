@@ -283,6 +283,19 @@ if [ -z "$target" ]; then
   done
 fi
 
+changed=1
+if [ -n "$target" ] && [ -f "$target" ]; then
+  if cmp -s "$tmp" "$target"; then
+    changed=0
+  fi
+fi
+
+if [ "$changed" -eq 0 ]; then
+  echo "changed=0 restart=0 target=${{target:-none}}"
+  rm -f "$tmp"
+  exit 0
+fi
+
 host_write_ok=0
 if [ -n "$target" ]; then
   mkdir -p "$(dirname "$target")" 2>/dev/null || true
@@ -292,24 +305,33 @@ if [ -n "$target" ]; then
 fi
 
 if [ "$host_write_ok" -eq 0 ] && [ -n "$container_id" ]; then
+  if [ -e /etc/caddy/Caddyfile ]; then
+    diff -u /etc/caddy/Caddyfile "$tmp" 2>/dev/null | head -n 200 || true
+  fi
   docker cp "$tmp" caddy:/etc/caddy/Caddyfile
   docker exec caddy sh -lc 'caddy validate --config /etc/caddy/Caddyfile' || true
   docker restart caddy >/dev/null 2>&1 || true
-  echo "container:/etc/caddy/Caddyfile"
+  echo "changed=1 restart=1 target=container:/etc/caddy/Caddyfile"
   rm -f "$tmp"
   exit 0
 fi
 
 if [ "$host_write_ok" -eq 1 ]; then
+  if [ -f "$target" ]; then
+    diff -u "$target" "$tmp" 2>/dev/null | head -n 200 || true
+  fi
+  restart_required=0
   if [ -n "$container_id" ]; then
     docker restart caddy >/dev/null 2>&1 || true
+    restart_required=1
   elif command -v caddy >/dev/null 2>&1; then
     caddy validate --config "$target"
     if command -v systemctl >/dev/null 2>&1; then
       systemctl reload caddy || true
+      restart_required=1
     fi
   fi
-  echo "$target"
+  echo "changed=1 restart=${{restart_required}} target=$target"
   rm -f "$tmp"
   exit 0
 fi
@@ -332,7 +354,8 @@ exit 1
         anyhow::bail!("Edge apply failed: {}", stderr.trim());
     }
 
-    let applied = String::from_utf8_lossy(&out.stdout)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let applied = stdout
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
@@ -340,7 +363,10 @@ exit 1
         .unwrap_or_default()
         .to_string();
     if !applied.is_empty() {
-        output::line(format!("✅ edge apply: caddy config synced at {}", applied));
+        output::line(format!("✅ edge apply: {}", applied));
+        if stdout.contains("--- ") || stdout.contains("+++ ") {
+            output::line("ℹ️ edge apply: Caddyfile diff emitted by remote apply");
+        }
     } else {
         output::line("✅ edge apply: caddy config synced");
     }

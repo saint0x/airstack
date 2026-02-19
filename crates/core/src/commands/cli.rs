@@ -37,7 +37,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             2 => planning_menu(&theme, config_path).await?,
             3 => edge_menu(&theme, config_path).await?,
             4 => remote_menu(&theme, config_path, &server_names, &service_names).await?,
-            5 => run_and_continue(commands::status::run(config_path, false, "auto").await),
+            5 => run_and_continue(commands::status::run(config_path, false, false, "auto").await),
             6 => break,
             _ => {}
         }
@@ -54,8 +54,8 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
             &["Status", "Status (Detailed)", "Up", "Destroy", "Back"],
         )?;
         match choice {
-            0 => run_and_continue(commands::status::run(config_path, false, "auto").await),
-            1 => run_and_continue(commands::status::run(config_path, true, "auto").await),
+            0 => run_and_continue(commands::status::run(config_path, false, false, "auto").await),
+            1 => run_and_continue(commands::status::run(config_path, true, false, "auto").await),
             2 => {
                 let provider = read_optional(theme, "Provider (blank = config default)")?;
                 let target = read_optional(theme, "Target env (blank = default)")?;
@@ -168,6 +168,7 @@ async fn services_menu(
                                 tag,
                                 push,
                                 update_config,
+                                remote_build: None,
                             },
                         )
                         .await,
@@ -200,7 +201,16 @@ async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
             0 => run_and_continue(commands::plan::run(config_path, false).await),
             1 => run_and_continue(commands::apply::run(config_path, false).await),
             2 => run_and_continue(commands::doctor::run(config_path).await),
-            3 => run_and_continue(commands::golive::run(config_path).await),
+            3 => run_and_continue(
+                commands::golive::run(
+                    config_path,
+                    commands::golive::GoLiveArgs {
+                        stability: 1,
+                        explain: false,
+                    },
+                )
+                .await,
+            ),
             4 => run_and_continue(commands::runbook::run(config_path).await),
             5 => run_and_continue(
                 commands::secrets::run(config_path, commands::secrets::SecretsCommands::List).await,

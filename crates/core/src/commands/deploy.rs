@@ -1,8 +1,8 @@
 use crate::commands::edge;
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
-    deploy_service_with_strategy, existing_service_image, resolve_target, rollback_service,
-    run_healthcheck, DeployStrategy,
+    deploy_service_with_strategy, evaluate_service_health, existing_service_image, resolve_target,
+    rollback_service, DeployStrategy,
 };
 use crate::output;
 use crate::state::{HealthState, LocalState, ServiceState};
@@ -112,11 +112,25 @@ pub async fn run(
         .await
         .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
 
-        if let Some(hc) = &service.healthcheck {
-            if let Err(err) = run_healthcheck(&runtime_target, deploy_name, hc).await {
+        if service.healthcheck.is_some() {
+            if let Err(err) =
+                evaluate_service_health(&runtime_target, deploy_name, service, false, 1, false)
+                    .await
+                    .and_then(|eval| {
+                        if eval.ok {
+                            Ok(())
+                        } else {
+                            anyhow::bail!("{}", eval.detail)
+                        }
+                    })
+            {
                 container.healthy = Some(false);
                 if let Some(prev) = &previous_image {
                     let _ = rollback_service(&runtime_target, deploy_name, prev, service).await;
+                    output::line(format!(
+                        "↩️ rollback target for {} -> image {}",
+                        deploy_name, prev
+                    ));
                 }
                 return Err(err).with_context(|| {
                     format!(

@@ -29,6 +29,9 @@ struct RegistryDoctorRecord {
     image: String,
     ok: bool,
     reason: String,
+    auth_ok: Option<bool>,
+    tag_checked: bool,
+    host_context: String,
     detail: String,
     remediation: Vec<String>,
 }
@@ -63,6 +66,9 @@ async fn doctor(config_path: &str, args: RegistryDoctorArgs) -> Result<()> {
                 image: args.image.clone(),
                 ok: true,
                 reason: "provider_managed".to_string(),
+                auth_ok: None,
+                tag_checked: false,
+                host_context: "fly-managed".to_string(),
                 detail: "provider=fly uses fly-managed image pull path".to_string(),
                 remediation: Vec::new(),
             });
@@ -82,6 +88,9 @@ async fn doctor(config_path: &str, args: RegistryDoctorArgs) -> Result<()> {
                 image: args.image.clone(),
                 ok: true,
                 reason: "ok".to_string(),
+                auth_ok: Some(true),
+                tag_checked: true,
+                host_context: "remote-docker-daemon".to_string(),
                 detail: "pull succeeded".to_string(),
                 remediation: Vec::new(),
             });
@@ -97,6 +106,9 @@ async fn doctor(config_path: &str, args: RegistryDoctorArgs) -> Result<()> {
             image: args.image.clone(),
             ok: false,
             reason,
+            auth_ok: Some(!detail.to_ascii_lowercase().contains("denied")),
+            tag_checked: true,
+            host_context: "remote-docker-daemon".to_string(),
             detail,
             remediation,
         });

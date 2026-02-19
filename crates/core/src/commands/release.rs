@@ -1,4 +1,5 @@
 use crate::output;
+use crate::ssh_utils::resolve_server_public_ip;
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use clap::Args;
@@ -14,6 +15,11 @@ pub struct ReleaseArgs {
     pub push: bool,
     #[arg(long, help = "Update service image in config file")]
     pub update_config: bool,
+    #[arg(
+        long,
+        help = "Build/push via remote Docker daemon on this infra server"
+    )]
+    pub remote_build: Option<String>,
 }
 
 pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
@@ -33,9 +39,45 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
     };
     let final_image = format!("{}:{}", base_image, tag);
 
-    run_cmd("docker", &["build", "-t", &final_image, "."])?;
-
-    if args.push {
+    if let Some(server_name) = &args.remote_build {
+        let infra = config
+            .infra
+            .as_ref()
+            .context("remote build requires [infra] servers in config")?;
+        let server = infra
+            .servers
+            .iter()
+            .find(|s| &s.name == server_name)
+            .with_context(|| format!("remote build server '{}' not found", server_name))?;
+        if server.provider == "fly" {
+            anyhow::bail!(
+                "release --remote-build does not support provider='fly'; use Fly-native release flow"
+            );
+        }
+        let ip = resolve_server_public_ip(server).await?;
+        let ctx = format!("airstack-remote-{}-{}", server_name, unix_now());
+        run_cmd(
+            "docker",
+            &[
+                "context",
+                "create",
+                &ctx,
+                "--docker",
+                &format!("host=ssh://root@{}", ip),
+            ],
+        )?;
+        run_cmd(
+            "docker",
+            &["--context", &ctx, "build", "-t", &final_image, "."],
+        )?;
+        if args.push {
+            run_cmd("docker", &["--context", &ctx, "push", &final_image])?;
+        }
+        let _ = run_cmd("docker", &["context", "rm", "-f", &ctx]);
+    } else {
+        run_cmd("docker", &["build", "-t", &final_image, "."])?;
+    }
+    if args.push && args.remote_build.is_none() {
         run_cmd("docker", &["push", &final_image])?;
     }
 
@@ -49,6 +91,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
             "image": final_image,
             "pushed": args.push,
             "updated_config": args.update_config,
+            "remote_build": args.remote_build,
         }))?;
     } else {
         output::line(format!("✅ release built: {}", final_image));
@@ -61,6 +104,13 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn git_sha() -> Result<String> {

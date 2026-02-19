@@ -144,6 +144,8 @@ enum Commands {
     Status {
         #[arg(long, help = "Show detailed status")]
         detailed: bool,
+        #[arg(long, help = "Run active health probes for services")]
+        probe: bool,
         #[arg(
             long,
             help = "Status source-of-truth mode: auto|provider|ssh|control-plane",
@@ -182,7 +184,7 @@ enum Commands {
     #[command(about = "Run production safety checks")]
     Doctor,
     #[command(about = "Validate full go-live readiness across infra/image/edge/health")]
-    GoLive,
+    GoLive(commands::golive::GoLiveArgs),
     #[command(about = "Check image drift between config and running runtime")]
     Drift,
     #[command(about = "Registry credential diagnostics")]
@@ -208,6 +210,8 @@ enum Commands {
     Release(commands::release::ReleaseArgs),
     #[command(about = "Atomic latest-code ship (build/push/deploy with rollback)")]
     Ship(commands::ship::ShipArgs),
+    #[command(about = "Collect status/log/diagnostic artifacts for bug reports")]
+    SupportBundle(commands::support_bundle::SupportBundleArgs),
 }
 
 #[tokio::main]
@@ -289,9 +293,11 @@ async fn main() -> Result<()> {
         }
         Commands::Cli => commands::cli::run(&cli.config).await,
         Commands::Tui { view } => commands::tui::run(&cli.config, view).await,
-        Commands::Status { detailed, source } => {
-            commands::status::run(&cli.config, detailed, &source).await
-        }
+        Commands::Status {
+            detailed,
+            probe,
+            source,
+        } => commands::status::run(&cli.config, detailed, probe, &source).await,
         Commands::Ssh { target, command } => {
             commands::ssh::run(&cli.config, &target, command).await
         }
@@ -306,7 +312,7 @@ async fn main() -> Result<()> {
         Commands::Apply => commands::apply::run(&cli.config, cli.allow_local_deploy).await,
         Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
         Commands::Doctor => commands::doctor::run(&cli.config).await,
-        Commands::GoLive => commands::golive::run(&cli.config).await,
+        Commands::GoLive(args) => commands::golive::run(&cli.config, args).await,
         Commands::Drift => commands::drift::run(&cli.config).await,
         Commands::Registry { command } => commands::registry::run(&cli.config, command).await,
         Commands::Reconcile(mut args) => {
@@ -321,5 +327,6 @@ async fn main() -> Result<()> {
             args.allow_local_deploy = cli.allow_local_deploy;
             commands::ship::run(&cli.config, args).await
         }
+        Commands::SupportBundle(args) => commands::support_bundle::run(&cli.config, args).await,
     }
 }
