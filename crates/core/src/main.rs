@@ -7,6 +7,7 @@ mod commands;
 mod dependencies;
 mod output;
 mod retry;
+mod ssh_utils;
 mod state;
 
 #[derive(Parser)]

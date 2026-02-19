@@ -1,11 +1,12 @@
-use airstack_config::{AirstackConfig, ServerConfig};
+use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::path::PathBuf;
-use std::process::Command;
 use tracing::info;
 
 use crate::output;
+use crate::ssh_utils::{
+    build_ssh_command as build_base_ssh_command, resolve_server_public_ip, SshCommandOptions,
+};
 
 #[derive(Debug, Serialize)]
 struct ContainerExecOutput {
@@ -34,7 +35,7 @@ pub async fn run(
         .find(|s| s.name == server)
         .with_context(|| format!("Server '{}' not found in configuration", server))?;
 
-    let ip = resolve_server_ip(server_cfg).await?;
+    let ip = resolve_server_public_ip(server_cfg).await?;
     info!(
         "Executing command in remote container '{}' on {} ({})",
         container, server, ip
@@ -46,7 +47,7 @@ pub async fn run(
                 "Interactive container exec cannot be used with --json. Provide a command."
             );
         }
-        let mut ssh_cmd = build_ssh_command(server_cfg, &ip)?;
+        let mut ssh_cmd = build_container_ssh_command(&server_cfg.ssh_key, &ip)?;
         ssh_cmd.arg("docker");
         ssh_cmd.arg("exec");
         ssh_cmd.arg("-it");
@@ -64,7 +65,7 @@ pub async fn run(
         return Ok(());
     }
 
-    let mut ssh_cmd = build_ssh_command(server_cfg, &ip)?;
+    let mut ssh_cmd = build_container_ssh_command(&server_cfg.ssh_key, &ip)?;
     ssh_cmd.arg("docker");
     ssh_cmd.arg("exec");
     ssh_cmd.arg(container);
@@ -105,65 +106,17 @@ pub async fn run(
     Ok(())
 }
 
-async fn resolve_server_ip(server_cfg: &ServerConfig) -> Result<String> {
-    use airstack_metal::get_provider as get_metal_provider;
-    use std::collections::HashMap;
-
-    let metal_provider = get_metal_provider(&server_cfg.provider, HashMap::new())
-        .with_context(|| format!("Failed to initialize {} provider", server_cfg.provider))?;
-    let servers = metal_provider
-        .list_servers()
-        .await
-        .context("Failed to list servers from provider")?;
-    let found = servers
-        .iter()
-        .find(|s| s.name == server_cfg.name)
-        .with_context(|| format!("Server '{}' not found in provider", server_cfg.name))?;
-    found
-        .public_ip
-        .clone()
-        .context("Server has no public IP address")
-}
-
-fn build_ssh_command(server_cfg: &ServerConfig, ip: &str) -> Result<Command> {
-    let mut ssh_cmd = Command::new("ssh");
-    ssh_cmd.args(["-o", "BatchMode=yes"]);
-    ssh_cmd.args(["-o", "ConnectTimeout=10"]);
-    ssh_cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
-    ssh_cmd.args(["-o", "LogLevel=ERROR"]);
-
-    if let Some(identity_path) = resolve_identity_path(&server_cfg.ssh_key)? {
-        ssh_cmd.args(["-i", &identity_path.to_string_lossy()]);
-    }
-
-    ssh_cmd.arg(format!("root@{ip}"));
-    Ok(ssh_cmd)
-}
-
-fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
-    if ssh_key.is_empty() {
-        return Ok(None);
-    }
-    if !(ssh_key.starts_with("~") || ssh_key.starts_with("/")) {
-        return Ok(None);
-    }
-
-    let path = if ssh_key.starts_with("~") {
-        let home = dirs::home_dir().context("Could not resolve home directory")?;
-        home.join(&ssh_key[2..])
-    } else {
-        PathBuf::from(ssh_key)
-    };
-
-    if path.extension().is_some_and(|ext| ext == "pub") {
-        let mut private = path.clone();
-        private.set_extension("");
-        if private.exists() {
-            return Ok(Some(private));
-        }
-    }
-    if path.exists() {
-        return Ok(Some(path));
-    }
-    Ok(None)
+fn build_container_ssh_command(ssh_key: &str, ip: &str) -> Result<std::process::Command> {
+    build_base_ssh_command(
+        ssh_key,
+        ip,
+        &SshCommandOptions {
+            user: "root",
+            batch_mode: true,
+            connect_timeout_secs: Some(10),
+            strict_host_key_checking: "accept-new",
+            user_known_hosts_file: None,
+            log_level: "ERROR",
+        },
+    )
 }

@@ -1,11 +1,8 @@
 use crate::output;
+use crate::ssh_utils::{build_ssh_command, resolve_server_public_ip, SshCommandOptions};
 use airstack_config::AirstackConfig;
-use airstack_metal::get_provider as get_metal_provider;
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 use tracing::info;
 
 #[derive(Debug, Serialize)]
@@ -33,43 +30,22 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
         .find(|s| s.name == target)
         .with_context(|| format!("Server '{}' not found in configuration", target))?;
 
-    let provider_config = HashMap::new();
-
-    let metal_provider = get_metal_provider(&server_config.provider, provider_config)
-        .with_context(|| format!("Failed to initialize {} provider", server_config.provider))?;
-
-    // Find the server to get its IP address
-    let servers = metal_provider
-        .list_servers()
-        .await
-        .context("Failed to list servers")?;
-
-    let server = servers
-        .iter()
-        .find(|s| s.name == target)
-        .with_context(|| format!("Server '{}' not found in provider", target))?;
-
-    let ip = server
-        .public_ip
-        .as_ref()
-        .context("Server has no public IP address")?;
+    let ip = resolve_server_public_ip(server_config).await?;
 
     output::line(format!("🔌 Connecting to {} ({})", target, ip));
 
-    // Prepare SSH command
-    let mut ssh_cmd = Command::new("ssh");
-    ssh_cmd.args(&["-o", "StrictHostKeyChecking=no"]);
-    ssh_cmd.args(&["-o", "UserKnownHostsFile=/dev/null"]);
-    ssh_cmd.args(&["-o", "LogLevel=ERROR"]);
-
-    // Add SSH key if specified
-    if let Some(identity_path) = resolve_identity_path(&server_config.ssh_key)? {
-        ssh_cmd.args(["-i", &identity_path.to_string_lossy()]);
-    }
-
-    // Default to root user for most cloud providers
-    let ssh_target = format!("root@{}", ip);
-    ssh_cmd.arg(&ssh_target);
+    let mut ssh_cmd = build_ssh_command(
+        &server_config.ssh_key,
+        &ip,
+        &SshCommandOptions {
+            user: "root",
+            batch_mode: false,
+            connect_timeout_secs: None,
+            strict_host_key_checking: "no",
+            user_known_hosts_file: Some("/dev/null"),
+            log_level: "ERROR",
+        },
+    )?;
 
     // Add command if specified
     if !command.is_empty() {
@@ -124,35 +100,4 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
     }
 
     Ok(())
-}
-
-fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
-    if ssh_key.is_empty() {
-        return Ok(None);
-    }
-
-    if !(ssh_key.starts_with("~") || ssh_key.starts_with("/")) {
-        return Ok(None);
-    }
-
-    let path = if ssh_key.starts_with("~") {
-        let home = dirs::home_dir().context("Could not find home directory")?;
-        home.join(&ssh_key[2..])
-    } else {
-        PathBuf::from(ssh_key)
-    };
-
-    if path.extension().is_some_and(|ext| ext == "pub") {
-        let mut private = path.clone();
-        private.set_extension("");
-        if private.exists() {
-            return Ok(Some(private));
-        }
-    }
-
-    if path.exists() {
-        return Ok(Some(path));
-    }
-
-    Ok(None)
 }

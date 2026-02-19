@@ -4,11 +4,10 @@ use airstack_metal::get_provider as get_metal_provider;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 use tracing::{info, warn};
 
 use crate::output;
+use crate::ssh_utils::{build_ssh_command, SshCommandOptions};
 use crate::state::{DriftReport, HealthState, LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
@@ -490,17 +489,18 @@ fn inspect_remote_containers_for_server(
     let mut last_err = None;
 
     for user in users {
-        let mut ssh_cmd = Command::new("ssh");
-        ssh_cmd.args(["-o", "BatchMode=yes"]);
-        ssh_cmd.args(["-o", "ConnectTimeout=8"]);
-        ssh_cmd.args(["-o", "StrictHostKeyChecking=accept-new"]);
-        ssh_cmd.args(["-o", "LogLevel=ERROR"]);
-
-        if let Some(identity_path) = resolve_identity_path(&server_cfg.ssh_key)? {
-            ssh_cmd.args(["-i", &identity_path.to_string_lossy()]);
-        }
-
-        ssh_cmd.arg(format!("{}@{}", user, ip));
+        let mut ssh_cmd = build_ssh_command(
+            &server_cfg.ssh_key,
+            ip,
+            &SshCommandOptions {
+                user,
+                batch_mode: true,
+                connect_timeout_secs: Some(8),
+                strict_host_key_checking: "accept-new",
+                user_known_hosts_file: None,
+                log_level: "ERROR",
+            },
+        )?;
         ssh_cmd.arg("docker");
         ssh_cmd.arg("ps");
         ssh_cmd.arg("--format");
@@ -595,32 +595,4 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
-    if ssh_key.is_empty() {
-        return Ok(None);
-    }
-    if !(ssh_key.starts_with("~") || ssh_key.starts_with("/")) {
-        return Ok(None);
-    }
-
-    let path = if ssh_key.starts_with("~") {
-        let home = dirs::home_dir().context("Could not resolve home directory")?;
-        home.join(&ssh_key[2..])
-    } else {
-        PathBuf::from(ssh_key)
-    };
-
-    if path.extension().is_some_and(|ext| ext == "pub") {
-        let mut private = path.clone();
-        private.set_extension("");
-        if private.exists() {
-            return Ok(Some(private));
-        }
-    }
-    if path.exists() {
-        return Ok(Some(path));
-    }
-    Ok(None)
 }
