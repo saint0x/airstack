@@ -1,9 +1,10 @@
-use airstack_config::{AirstackConfig, ServerConfig};
+use airstack_config::{AirstackConfig, InfraConfig, ServerConfig};
 use airstack_container::get_provider as get_container_provider;
-use airstack_metal::get_provider as get_metal_provider;
+use airstack_metal::{get_provider as get_metal_provider, Server};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::output;
@@ -93,137 +94,120 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
             output::line("🏗️  Infrastructure Status:");
         }
 
+        let provider_servers = fetch_provider_servers(infra).await;
+
         for server in &infra.servers {
-            let provider_config = HashMap::new();
-            match get_metal_provider(&server.provider, provider_config) {
-                Ok(metal_provider) => match metal_provider.list_servers().await {
-                    Ok(servers) => {
-                        if let Some(found_server) = servers.iter().find(|s| s.name == server.name) {
-                            let status_text = format!("{:?}", found_server.status);
-                            let cached_health = map_server_health(found_server.status.clone());
-                            let checked_at = unix_now();
+            match provider_servers.get(&server.provider) {
+                Some(Ok(servers)) => {
+                    if let Some(found_server) = servers.iter().find(|s| s.name == server.name) {
+                        let status_text = format!("{:?}", found_server.status);
+                        let cached_health = map_server_health(found_server.status.clone());
+                        let checked_at = unix_now();
 
-                            if let Some(ip) = &found_server.public_ip {
-                                server_ips.insert(server.name.clone(), ip.clone());
-                            }
-
-                            state.servers.insert(
-                                server.name.clone(),
-                                ServerState {
-                                    provider: server.provider.clone(),
-                                    id: Some(found_server.id.clone()),
-                                    public_ip: found_server.public_ip.clone(),
-                                    health: cached_health,
-                                    last_status: Some(status_text.clone()),
-                                    last_checked_unix: checked_at,
-                                    last_error: None,
-                                },
-                            );
-
-                            if !output::is_json() {
-                                let status_icon = match found_server.status {
-                                    airstack_metal::ServerStatus::Running => "✅",
-                                    airstack_metal::ServerStatus::Creating => "🔄",
-                                    airstack_metal::ServerStatus::Stopped => "⏹️",
-                                    airstack_metal::ServerStatus::Deleting => "🗑️",
-                                    airstack_metal::ServerStatus::Error => "❌",
-                                };
-                                output::line(format!(
-                                    "   {} {} ({})",
-                                    status_icon, found_server.name, status_text
-                                ));
-                                if detailed {
-                                    if let Some(ip) = &found_server.public_ip {
-                                        output::line(format!("      Public IP: {}", ip));
-                                    }
-                                    if let Some(ip) = &found_server.private_ip {
-                                        output::line(format!("      Private IP: {}", ip));
-                                    }
-                                    output::line(format!(
-                                        "      Type: {}",
-                                        found_server.server_type
-                                    ));
-                                    output::line(format!("      Region: {}", found_server.region));
-                                }
-                            }
-
-                            infra_records.push(ServerStatusRecord {
-                                name: found_server.name.clone(),
-                                status: status_text,
-                                cached_health: Some(cached_health.as_str().to_string()),
-                                cached_last_checked_unix: Some(checked_at),
-                                public_ip: found_server.public_ip.clone(),
-                                private_ip: found_server.private_ip.clone(),
-                                server_type: Some(found_server.server_type.clone()),
-                                region: Some(found_server.region.clone()),
-                                note: None,
-                            });
-                        } else {
-                            let checked_at = unix_now();
-                            state.servers.insert(
-                                server.name.clone(),
-                                ServerState {
-                                    provider: server.provider.clone(),
-                                    id: None,
-                                    public_ip: None,
-                                    health: HealthState::Unhealthy,
-                                    last_status: Some("NotFound".to_string()),
-                                    last_checked_unix: checked_at,
-                                    last_error: Some("not found in provider".to_string()),
-                                },
-                            );
-
-                            if !output::is_json() {
-                                output::line(format!("   ❓ {} (not found)", server.name));
-                            }
-                            infra_records.push(ServerStatusRecord {
-                                name: server.name.clone(),
-                                status: "NotFound".to_string(),
-                                cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
-                                cached_last_checked_unix: Some(checked_at),
-                                public_ip: None,
-                                private_ip: None,
-                                server_type: Some(server.server_type.clone()),
-                                region: Some(server.region.clone()),
-                                note: Some("not found in provider".to_string()),
-                            });
+                        if let Some(ip) = &found_server.public_ip {
+                            server_ips.insert(server.name.clone(), ip.clone());
                         }
-                    }
-                    Err(e) => {
-                        warn!("Failed to check server {}: {}", server.name, e);
+
+                        state.servers.insert(
+                            server.name.clone(),
+                            ServerState {
+                                provider: server.provider.clone(),
+                                id: Some(found_server.id.clone()),
+                                public_ip: found_server.public_ip.clone(),
+                                health: cached_health,
+                                last_status: Some(status_text.clone()),
+                                last_checked_unix: checked_at,
+                                last_error: None,
+                            },
+                        );
+
+                        if !output::is_json() {
+                            let status_icon = match found_server.status {
+                                airstack_metal::ServerStatus::Running => "✅",
+                                airstack_metal::ServerStatus::Creating => "🔄",
+                                airstack_metal::ServerStatus::Stopped => "⏹️",
+                                airstack_metal::ServerStatus::Deleting => "🗑️",
+                                airstack_metal::ServerStatus::Error => "❌",
+                            };
+                            output::line(format!(
+                                "   {} {} ({})",
+                                status_icon, found_server.name, status_text
+                            ));
+                            if detailed {
+                                if let Some(ip) = &found_server.public_ip {
+                                    output::line(format!("      Public IP: {}", ip));
+                                }
+                                if let Some(ip) = &found_server.private_ip {
+                                    output::line(format!("      Private IP: {}", ip));
+                                }
+                                output::line(format!("      Type: {}", found_server.server_type));
+                                output::line(format!("      Region: {}", found_server.region));
+                            }
+                        }
+
+                        infra_records.push(ServerStatusRecord {
+                            name: found_server.name.clone(),
+                            status: status_text,
+                            cached_health: Some(cached_health.as_str().to_string()),
+                            cached_last_checked_unix: Some(checked_at),
+                            public_ip: found_server.public_ip.clone(),
+                            private_ip: found_server.private_ip.clone(),
+                            server_type: Some(found_server.server_type.clone()),
+                            region: Some(found_server.region.clone()),
+                            note: None,
+                        });
+                    } else {
                         let checked_at = unix_now();
                         state.servers.insert(
                             server.name.clone(),
                             ServerState {
                                 provider: server.provider.clone(),
-                                id: state.servers.get(&server.name).and_then(|s| s.id.clone()),
-                                public_ip: state
-                                    .servers
-                                    .get(&server.name)
-                                    .and_then(|s| s.public_ip.clone()),
+                                id: None,
+                                public_ip: None,
                                 health: HealthState::Unhealthy,
-                                last_status: Some("Error".to_string()),
+                                last_status: Some("NotFound".to_string()),
                                 last_checked_unix: checked_at,
-                                last_error: Some(format!("error checking status: {}", e)),
+                                last_error: Some("not found in provider".to_string()),
                             },
                         );
 
+                        if !output::is_json() {
+                            output::line(format!("   ❓ {} (not found)", server.name));
+                        }
                         infra_records.push(ServerStatusRecord {
                             name: server.name.clone(),
-                            status: "Error".to_string(),
+                            status: "NotFound".to_string(),
                             cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
                             cached_last_checked_unix: Some(checked_at),
                             public_ip: None,
                             private_ip: None,
                             server_type: Some(server.server_type.clone()),
                             region: Some(server.region.clone()),
-                            note: Some(format!("error checking status: {}", e)),
+                            note: Some("not found in provider".to_string()),
                         });
                     }
-                },
-                Err(e) => {
-                    warn!("Failed to initialize provider for {}: {}", server.name, e);
+                }
+                Some(Err(e)) => {
+                    warn!(
+                        "Failed to initialize or query provider {} for {}: {}",
+                        server.provider, server.name, e
+                    );
                     let checked_at = unix_now();
+                    state.servers.insert(
+                        server.name.clone(),
+                        ServerState {
+                            provider: server.provider.clone(),
+                            id: state.servers.get(&server.name).and_then(|s| s.id.clone()),
+                            public_ip: state
+                                .servers
+                                .get(&server.name)
+                                .and_then(|s| s.public_ip.clone()),
+                            health: HealthState::Unhealthy,
+                            last_status: Some("ProviderError".to_string()),
+                            last_checked_unix: checked_at,
+                            last_error: Some(e.clone()),
+                        },
+                    );
                     infra_records.push(ServerStatusRecord {
                         name: server.name.clone(),
                         status: "ProviderError".to_string(),
@@ -233,7 +217,29 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                         private_ip: None,
                         server_type: Some(server.server_type.clone()),
                         region: Some(server.region.clone()),
-                        note: Some(format!("provider error: {}", e)),
+                        note: Some(e.clone()),
+                    });
+                }
+                None => {
+                    let checked_at = unix_now();
+                    let note = format!(
+                        "provider '{}' was not scheduled for lookup",
+                        server.provider
+                    );
+                    warn!(
+                        "No provider lookup result available for {}: {}",
+                        server.name, note
+                    );
+                    infra_records.push(ServerStatusRecord {
+                        name: server.name.clone(),
+                        status: "ProviderError".to_string(),
+                        cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
+                        cached_last_checked_unix: Some(checked_at),
+                        public_ip: None,
+                        private_ip: None,
+                        server_type: Some(server.server_type.clone()),
+                        region: Some(server.region.clone()),
+                        note: Some(note),
                     });
                 }
             }
@@ -246,9 +252,39 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 
     let mut remote_containers = Vec::new();
     if let Some(infra) = &config.infra {
+        let mut probe_set = JoinSet::new();
         for server_cfg in &infra.servers {
             if let Some(ip) = server_ips.get(&server_cfg.name) {
-                match inspect_remote_containers_for_server(server_cfg, ip) {
+                let cfg = server_cfg.clone();
+                let ip = ip.clone();
+                probe_set.spawn_blocking(move || {
+                    let server_name = cfg.name.clone();
+                    (
+                        server_name,
+                        ip.clone(),
+                        inspect_remote_containers_for_server(&cfg, &ip),
+                    )
+                });
+            }
+        }
+
+        let mut probe_results: HashMap<String, (String, Result<Vec<RemoteContainerRecord>>)> =
+            HashMap::new();
+        while let Some(joined) = probe_set.join_next().await {
+            match joined {
+                Ok((server_name, ip, result)) => {
+                    probe_results.insert(server_name, (ip, result));
+                }
+                Err(e) => {
+                    warn!("Remote container probe task failed to join: {}", e);
+                }
+            }
+        }
+
+        // Preserve configured server order for stable output.
+        for server_cfg in &infra.servers {
+            if let Some((ip, result)) = probe_results.remove(&server_cfg.name) {
+                match result {
                     Ok(mut containers) => remote_containers.append(&mut containers),
                     Err(e) => {
                         warn!(
@@ -551,6 +587,44 @@ fn inspect_remote_containers_for_server(
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Unable to inspect remote containers")))
+}
+
+async fn fetch_provider_servers(
+    infra: &InfraConfig,
+) -> HashMap<String, Result<Vec<Server>, String>> {
+    let mut lookup_set = JoinSet::new();
+    let mut providers = std::collections::HashSet::new();
+
+    for server in &infra.servers {
+        if providers.insert(server.provider.clone()) {
+            let provider = server.provider.clone();
+            lookup_set.spawn(async move {
+                let provider_config = HashMap::new();
+                let result = match get_metal_provider(&provider, provider_config) {
+                    Ok(metal_provider) => metal_provider
+                        .list_servers()
+                        .await
+                        .map_err(|e| format!("error checking status: {}", e)),
+                    Err(e) => Err(format!("provider error: {}", e)),
+                };
+                (provider, result)
+            });
+        }
+    }
+
+    let mut by_provider = HashMap::new();
+    while let Some(joined) = lookup_set.join_next().await {
+        match joined {
+            Ok((provider, result)) => {
+                by_provider.insert(provider, result);
+            }
+            Err(e) => {
+                let err = format!("provider lookup task failed: {}", e);
+                warn!("{}", err);
+            }
+        }
+    }
+    by_provider
 }
 
 fn map_server_health(status: airstack_metal::ServerStatus) -> HealthState {
