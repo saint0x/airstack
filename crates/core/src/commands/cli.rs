@@ -1,6 +1,5 @@
 use crate::commands;
 use crate::output;
-use crate::theme;
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use crossterm::cursor;
@@ -27,10 +26,7 @@ pub async fn run(config_path: &str) -> Result<()> {
             "Exit".to_string(),
         ];
 
-        let title = format!(
-            "Airstack CLI  ·  {}  ·  {}",
-            config.project.name, config_path
-        );
+        let title = format!("Airstack CLI ({})", config.project.name);
         let selected = select_interactive(&title, &choices, false)?;
         match selected {
             Some(0) => infrastructure_menu(config_path).await?,
@@ -261,33 +257,30 @@ fn render_menu(title: &str, options: &[String], selected: usize, allow_back: boo
     )
     .context("Failed to render menu")?;
 
-    println!(
-        "{}",
-        theme::ansi_fg(theme::ansi_bold(title), theme::STEEL_200)
-    );
+    let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+    println!("{}", fit_line(title, width));
     let controls = if allow_back {
-        "↑/↓ move  •  →/Enter select  •  ←/Esc back"
+        "Up/Down move | Right/Enter select | Left/Esc back"
     } else {
-        "↑/↓ move  •  →/Enter select"
+        "Up/Down move | Right/Enter select"
     };
-    println!("{}", theme::ansi_fg(controls, theme::GRAY_500));
+    println!("{}", fit_line(controls, width));
     println!();
 
     for (idx, option) in options.iter().enumerate() {
         if idx == selected {
-            println!(
-                "{}",
-                theme::ansi_fg(format!("› {}", theme::ansi_bold(option)), theme::OCEAN_400)
-            );
+            println!("{}", fit_line(format!("> {}", option), width));
         } else {
-            println!(
-                "{}",
-                theme::ansi_fg(format!("  {}", option), theme::GRAY_500)
-            );
+            println!("{}", fit_line(format!("  {}", option), width));
         }
     }
 
     stdout.flush().context("Failed to flush menu output")
+}
+
+fn fit_line(line: impl AsRef<str>, width: usize) -> String {
+    let max = width.saturating_sub(1).max(1);
+    line.as_ref().chars().take(max).collect()
 }
 
 fn confirm(prompt: &str, default: bool) -> Result<bool> {
