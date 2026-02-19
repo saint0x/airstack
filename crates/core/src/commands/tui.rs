@@ -17,6 +17,7 @@ use ftui::widgets::Widget;
 
 use crate::output;
 use crate::state::{DriftReport, HealthState, LocalState};
+use crate::theme;
 
 const AIRSTACK_BANNER: &str = r#"
      _    _         _             _
@@ -30,14 +31,18 @@ const AIRSTACK_BANNER: &str = r#"
 const ANIMATION_TICK_INTERVAL: Duration = Duration::from_millis(220);
 const REFRESH_EVERY_TICKS: u64 = 3;
 const SHIMMER_STEP_TICKS: u64 = 3;
-const STONE_BG: PackedRgba = PackedRgba::rgb(31, 36, 40);
-const STONE_PANEL: PackedRgba = PackedRgba::rgb(41, 47, 52);
-const STONE_EDGE: PackedRgba = PackedRgba::rgb(58, 66, 74);
-const STONE_MUTED: PackedRgba = PackedRgba::rgb(149, 161, 172);
-const STEEL_MAIN: PackedRgba = PackedRgba::rgb(161, 194, 220);
-const STEEL_BRIGHT: PackedRgba = PackedRgba::rgb(206, 226, 242);
-const TEXT_MAIN: PackedRgba = PackedRgba::rgb(224, 229, 233);
+const STONE_BG: PackedRgba = rgb(theme::STONE_900);
+const STONE_PANEL: PackedRgba = rgb(theme::STONE_800);
+const STONE_EDGE: PackedRgba = rgb(theme::STONE_700);
+const STONE_MUTED: PackedRgba = rgb(theme::GRAY_500);
+const STEEL_MAIN: PackedRgba = rgb(theme::STEEL_300);
+const STEEL_BRIGHT: PackedRgba = rgb(theme::STEEL_200);
+const TEXT_MAIN: PackedRgba = rgb(theme::WHITE_100);
 const SPINNER_FRAMES: &[&str] = &["|", "/", "-", "\\"];
+
+const fn rgb(c: theme::Rgb) -> PackedRgba {
+    PackedRgba::rgb(c.0, c.1, c.2)
+}
 
 const VIEWS: &[&str] = &[
     "Dashboard",

@@ -26,6 +26,7 @@ anyhow.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 dotenvy.workspace = true
+crossterm.workspace = true
 
 airstack-config = { path = "../config" }
 airstack-metal = { path = "../metal" }

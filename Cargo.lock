@@ -59,6 +59,7 @@ dependencies = [
  "airstack-metal",
  "anyhow",
  "clap",
+ "crossterm",
  "dirs",
  "dotenvy",
  "ftui",

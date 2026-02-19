@@ -88,6 +88,7 @@ airstack status
 | `airstack deploy <service>` | Deploy a service |
 | `airstack cexec <server> <container> [cmd...]` | Execute a command inside a remote container |
 | `airstack scale <service> <replicas>` | Scale service replicas |
+| `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack status` | Show status |
 | `airstack ssh <server>` | SSH into a server |

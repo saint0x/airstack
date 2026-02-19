@@ -9,6 +9,7 @@ mod output;
 mod retry;
 mod ssh_utils;
 mod state;
+mod theme;
 
 #[derive(Parser)]
 #[command(name = "airstack")]
@@ -91,6 +92,8 @@ enum Commands {
         #[arg(help = "Target number of replicas")]
         replicas: usize,
     },
+    #[command(about = "Launch lightweight interactive CLI menus")]
+    Cli,
     #[command(about = "Launch the FrankenTUI-powered Airstack interface")]
     Tui {
         #[arg(
@@ -134,7 +137,7 @@ async fn main() -> Result<()> {
     } else if cli.json || cli.quiet {
         Level::ERROR
     } else {
-        Level::INFO
+        Level::WARN
     };
 
     let subscriber = FmtSubscriber::builder()
@@ -170,6 +173,7 @@ async fn main() -> Result<()> {
         Commands::Scale { service, replicas } => {
             commands::scale::run(&cli.config, &service, replicas).await
         }
+        Commands::Cli => commands::cli::run(&cli.config).await,
         Commands::Tui { view } => commands::tui::run(&cli.config, view).await,
         Commands::Status { detailed } => commands::status::run(&cli.config, detailed).await,
         Commands::Ssh { target, command } => {

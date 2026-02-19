@@ -1,4 +1,5 @@
 pub mod cexec;
+pub mod cli;
 pub mod deploy;
 pub mod destroy;
 pub mod init;

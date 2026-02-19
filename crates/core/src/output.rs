@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::theme;
+
 const ENV_JSON: &str = "AIRSTACK_OUTPUT_JSON";
 const ENV_QUIET: &str = "AIRSTACK_OUTPUT_QUIET";
 
@@ -23,9 +25,15 @@ pub fn line(message: impl AsRef<str>) {
     }
 }
 
+pub fn subtle_line(message: impl AsRef<str>) {
+    if !is_json() && !is_quiet() {
+        println!("{}", theme::ansi_fg(message.as_ref(), theme::GRAY_500));
+    }
+}
+
 pub fn error_line(message: impl AsRef<str>) {
     if !is_json() {
-        eprintln!("{}", message.as_ref());
+        eprintln!("{}", theme::ansi_fg(message.as_ref(), theme::STEEL_200));
     }
 }
 
