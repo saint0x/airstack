@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod fly;
 pub mod hetzner;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,8 +34,18 @@ pub struct CreateServerRequest {
     pub attach_floating_ip: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    pub supports_public_ip: bool,
+    pub supports_direct_ssh: bool,
+    pub supports_provider_ssh: bool,
+    pub supports_server_create: bool,
+    pub supports_server_destroy: bool,
+}
+
 #[async_trait::async_trait]
 pub trait MetalProvider: Send + Sync {
+    fn capabilities(&self) -> ProviderCapabilities;
     async fn create_server(&self, request: CreateServerRequest) -> Result<Server>;
     async fn destroy_server(&self, id: &str) -> Result<()>;
     async fn get_server(&self, id: &str) -> Result<Server>;
@@ -49,6 +60,7 @@ pub fn get_provider(
 ) -> Result<Box<dyn MetalProvider>> {
     match provider_name {
         "hetzner" => Ok(Box::new(hetzner::HetznerProvider::new(config)?)),
+        "fly" => Ok(Box::new(fly::FlyProvider::new(config)?)),
         _ => anyhow::bail!("Unsupported metal provider: {}", provider_name),
     }
 }

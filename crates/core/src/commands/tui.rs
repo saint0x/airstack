@@ -810,10 +810,11 @@ fn render_providers_view(summary: &TuiSummary) -> String {
     let mut lines = vec!["providers".to_string(), String::new()];
 
     for provider in &summary.providers {
-        let capability = if provider == "docker" {
-            "container-runtime"
-        } else {
-            "infrastructure"
+        let capability = match provider.as_str() {
+            "docker" => "container-runtime",
+            "hetzner" => "infra + direct-ssh",
+            "fly" => "infra + provider-ssh",
+            _ => "infrastructure",
         };
         lines.push(format!("{} ({})", provider, capability));
     }
@@ -823,7 +824,10 @@ fn render_providers_view(summary: &TuiSummary) -> String {
     }
 
     lines.push(String::new());
-    lines.push("provider discovery and capability flags remain in roadmap".to_string());
+    lines.push(
+        "provider discovery remains in roadmap; capability flags are partially implemented"
+            .to_string(),
+    );
     lines.join("\n")
 }
 

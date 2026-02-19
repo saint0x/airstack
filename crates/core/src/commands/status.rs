@@ -8,7 +8,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::output;
-use crate::ssh_utils::{build_ssh_command, SshCommandOptions};
+use crate::ssh_utils::execute_remote_command;
 use crate::state::{DriftReport, HealthState, LocalState, ServerState, ServiceState};
 
 #[derive(Debug, Serialize)]
@@ -78,7 +78,6 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 
     let mut infra_records = Vec::new();
     let mut service_records = Vec::new();
-    let mut server_ips: HashMap<String, String> = HashMap::new();
 
     if !output::is_json() {
         output::line("📊 Airstack Status Report");
@@ -103,10 +102,6 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
                         let status_text = format!("{:?}", found_server.status);
                         let cached_health = map_server_health(found_server.status.clone());
                         let checked_at = unix_now();
-
-                        if let Some(ip) = &found_server.public_ip {
-                            server_ips.insert(server.name.clone(), ip.clone());
-                        }
 
                         state.servers.insert(
                             server.name.clone(),
@@ -254,26 +249,24 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     if let Some(infra) = &config.infra {
         let mut probe_set = JoinSet::new();
         for server_cfg in &infra.servers {
-            if let Some(ip) = server_ips.get(&server_cfg.name) {
-                let cfg = server_cfg.clone();
-                let ip = ip.clone();
-                probe_set.spawn_blocking(move || {
-                    let server_name = cfg.name.clone();
-                    (
-                        server_name,
-                        ip.clone(),
-                        inspect_remote_containers_for_server(&cfg, &ip),
-                    )
-                });
+            if server_cfg.provider == "fly" {
+                continue;
             }
+            let cfg = server_cfg.clone();
+            probe_set.spawn(async move {
+                let server_name = cfg.name.clone();
+                (
+                    server_name,
+                    inspect_remote_containers_for_server(&cfg).await,
+                )
+            });
         }
 
-        let mut probe_results: HashMap<String, (String, Result<Vec<RemoteContainerRecord>>)> =
-            HashMap::new();
+        let mut probe_results: HashMap<String, Result<Vec<RemoteContainerRecord>>> = HashMap::new();
         while let Some(joined) = probe_set.join_next().await {
             match joined {
-                Ok((server_name, ip, result)) => {
-                    probe_results.insert(server_name, (ip, result));
+                Ok((server_name, result)) => {
+                    probe_results.insert(server_name, result);
                 }
                 Err(e) => {
                     warn!("Remote container probe task failed to join: {}", e);
@@ -283,13 +276,13 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
 
         // Preserve configured server order for stable output.
         for server_cfg in &infra.servers {
-            if let Some((ip, result)) = probe_results.remove(&server_cfg.name) {
+            if let Some(result) = probe_results.remove(&server_cfg.name) {
                 match result {
                     Ok(mut containers) => remote_containers.append(&mut containers),
                     Err(e) => {
                         warn!(
-                            "Remote container inventory failed for {} ({}): {}",
-                            server_cfg.name, ip, e
+                            "Remote container inventory failed for {}: {}",
+                            server_cfg.name, e
                         );
                     }
                 }
@@ -517,76 +510,44 @@ pub async fn run(config_path: &str, detailed: bool) -> Result<()> {
     Ok(())
 }
 
-fn inspect_remote_containers_for_server(
+async fn inspect_remote_containers_for_server(
     server_cfg: &ServerConfig,
-    ip: &str,
 ) -> Result<Vec<RemoteContainerRecord>> {
-    let users = ["root", "ubuntu"];
-    let mut last_err = None;
-
-    for user in users {
-        let mut ssh_cmd = build_ssh_command(
-            &server_cfg.ssh_key,
-            ip,
-            &SshCommandOptions {
-                user,
-                batch_mode: true,
-                connect_timeout_secs: Some(8),
-                strict_host_key_checking: "accept-new",
-                user_known_hosts_file: None,
-                log_level: "ERROR",
-            },
-        )?;
-        ssh_cmd.arg("docker");
-        ssh_cmd.arg("ps");
-        ssh_cmd.arg("--format");
-        ssh_cmd.arg("'{{json .}}'");
-
-        match ssh_cmd.output() {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let mut items = Vec::new();
-                for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-                    let parsed: DockerPsLine = serde_json::from_str(line).with_context(|| {
-                        format!(
-                            "Failed to parse docker ps JSON for server {}: {}",
-                            server_cfg.name, line
-                        )
-                    })?;
-                    items.push(RemoteContainerRecord {
-                        server: server_cfg.name.clone(),
-                        name: parsed.names.unwrap_or_default(),
-                        id: parsed.id.unwrap_or_default(),
-                        image: parsed.image.unwrap_or_default(),
-                        status: parsed.status.unwrap_or_else(|| "Unknown".to_string()),
-                        ports: parsed
-                            .ports
-                            .filter(|p| !p.is_empty())
-                            .map(|p| vec![p])
-                            .unwrap_or_default(),
-                    });
-                }
-                return Ok(items);
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                last_err = Some(anyhow::anyhow!(
-                    "SSH/docker command failed as {}@{}: {}",
-                    user,
-                    ip,
-                    stderr.trim()
-                ));
-            }
-            Err(e) => {
-                last_err = Some(
-                    anyhow::Error::new(e)
-                        .context(format!("Failed to execute SSH command as {}@{}", user, ip)),
-                );
-            }
-        }
+    let command = vec![
+        "docker".to_string(),
+        "ps".to_string(),
+        "--format".to_string(),
+        "{{json .}}".to_string(),
+    ];
+    let out = execute_remote_command(server_cfg, &command).await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("remote docker ps failed: {}", stderr.trim());
     }
 
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Unable to inspect remote containers")))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut items = Vec::new();
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let parsed: DockerPsLine = serde_json::from_str(line).with_context(|| {
+            format!(
+                "Failed to parse docker ps JSON for server {}: {}",
+                server_cfg.name, line
+            )
+        })?;
+        items.push(RemoteContainerRecord {
+            server: server_cfg.name.clone(),
+            name: parsed.names.unwrap_or_default(),
+            id: parsed.id.unwrap_or_default(),
+            image: parsed.image.unwrap_or_default(),
+            status: parsed.status.unwrap_or_else(|| "Unknown".to_string()),
+            ports: parsed
+                .ports
+                .filter(|p| !p.is_empty())
+                .map(|p| vec![p])
+                .unwrap_or_default(),
+        });
+    }
+    Ok(items)
 }
 
 async fn fetch_provider_servers(

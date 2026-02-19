@@ -1,4 +1,4 @@
-use crate::{CreateServerRequest, MetalProvider, Server, ServerStatus};
+use crate::{CreateServerRequest, MetalProvider, ProviderCapabilities, Server, ServerStatus};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -126,6 +126,16 @@ impl HetznerProvider {
 
 #[async_trait::async_trait]
 impl MetalProvider for HetznerProvider {
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_public_ip: true,
+            supports_direct_ssh: true,
+            supports_provider_ssh: false,
+            supports_server_create: true,
+            supports_server_destroy: true,
+        }
+    }
+
     async fn create_server(&self, request: CreateServerRequest) -> Result<Server> {
         info!("Creating Hetzner server: {}", request.name);
 

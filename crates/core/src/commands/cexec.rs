@@ -4,9 +4,7 @@ use serde::Serialize;
 use tracing::info;
 
 use crate::output;
-use crate::ssh_utils::{
-    build_ssh_command as build_base_ssh_command, resolve_server_public_ip, SshCommandOptions,
-};
+use crate::ssh_utils::{execute_remote_command, start_remote_session};
 
 #[derive(Debug, Serialize)]
 struct ContainerExecOutput {
@@ -35,10 +33,9 @@ pub async fn run(
         .find(|s| s.name == server)
         .with_context(|| format!("Server '{}' not found in configuration", server))?;
 
-    let ip = resolve_server_public_ip(server_cfg).await?;
     info!(
-        "Executing command in remote container '{}' on {} ({})",
-        container, server, ip
+        "Executing command in remote container '{}' on {} via {}",
+        container, server, server_cfg.provider
     );
 
     if command.is_empty() {
@@ -47,34 +44,27 @@ pub async fn run(
                 "Interactive container exec cannot be used with --json. Provide a command."
             );
         }
-        let mut ssh_cmd = build_container_ssh_command(&server_cfg.ssh_key, &ip)?;
-        ssh_cmd.arg("docker");
-        ssh_cmd.arg("exec");
-        ssh_cmd.arg("-it");
-        ssh_cmd.arg(container);
-        ssh_cmd.arg("sh");
-        let status = ssh_cmd
-            .status()
-            .context("Failed to start container shell")?;
-        if !status.success() {
-            anyhow::bail!(
-                "Interactive container shell failed with {:?}",
-                status.code()
-            );
+        let shell_cmd = vec![
+            "docker".to_string(),
+            "exec".to_string(),
+            "-it".to_string(),
+            container.to_string(),
+            "sh".to_string(),
+        ];
+        let code = start_remote_session(server_cfg, &shell_cmd).await?;
+        if code != 0 {
+            anyhow::bail!("Interactive container shell failed with {}", code);
         }
         return Ok(());
     }
 
-    let mut ssh_cmd = build_container_ssh_command(&server_cfg.ssh_key, &ip)?;
-    ssh_cmd.arg("docker");
-    ssh_cmd.arg("exec");
-    ssh_cmd.arg(container);
-    for part in &command {
-        ssh_cmd.arg(part);
-    }
-    let result = ssh_cmd
-        .output()
-        .context("Failed to execute remote container command")?;
+    let mut remote_cmd = vec![
+        "docker".to_string(),
+        "exec".to_string(),
+        container.to_string(),
+    ];
+    remote_cmd.extend(command.iter().cloned());
+    let result = execute_remote_command(server_cfg, &remote_cmd).await?;
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
 
@@ -104,19 +94,4 @@ pub async fn run(
     }
 
     Ok(())
-}
-
-fn build_container_ssh_command(ssh_key: &str, ip: &str) -> Result<std::process::Command> {
-    build_base_ssh_command(
-        ssh_key,
-        ip,
-        &SshCommandOptions {
-            user: "root",
-            batch_mode: true,
-            connect_timeout_secs: Some(10),
-            strict_host_key_checking: "accept-new",
-            user_known_hosts_file: None,
-            log_level: "ERROR",
-        },
-    )
 }

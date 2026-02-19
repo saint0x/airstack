@@ -152,6 +152,10 @@ Currently supported:
 - **Hetzner Cloud** (`hetzner`)
   - Set `HETZNER_API_KEY` (or `HETZNER_TOKEN`) environment variable
   - Supports all server types and regions
+- **Fly.io Machines** (`fly`)
+  - Uses `flyctl` for provider operations
+  - Auth resolution order: provider token -> `FLY_API_TOKEN` -> `FLY_ACCESS_TOKEN` -> local `flyctl auth`
+  - Supports app/machine inventory, machine create/destroy, and provider-native SSH (`flyctl ssh console`)
 
 ### Container Runtimes
 
@@ -183,6 +187,13 @@ region = "fsn1"
 server_type = "cx21"
 ssh_key = "~/.ssh/id_ed25519.pub"
 
+[[infra.servers]]
+name = "edge-fly"
+provider = "fly"
+region = "iad"
+server_type = "shared-cpu-1x"
+ssh_key = "~/.ssh/id_ed25519.pub"
+
 # Services with dependencies
 [services.database]
 image = "postgres:15"
@@ -210,6 +221,7 @@ env = { API_URL = "http://api:3000" }
 - Rust 1.70+
 - Node.js 18+
 - Docker (for container features)
+- `flyctl` (if using `provider = "fly"`)
 
 ### Build from Source
 

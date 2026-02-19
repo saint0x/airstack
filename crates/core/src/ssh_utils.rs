@@ -3,7 +3,7 @@ use airstack_metal::{get_provider as get_metal_provider, Server};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 
 #[derive(Debug, Clone)]
 pub struct SshCommandOptions<'a> {
@@ -43,6 +43,133 @@ pub fn build_ssh_command(
 
     ssh_cmd.arg(format!("{}@{}", options.user, ip));
     Ok(ssh_cmd)
+}
+
+fn shell_escape(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    if arg
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "-_./:".contains(ch))
+    {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\"'\"'"))
+}
+
+fn join_shell_command(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|part| shell_escape(part))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_fly_server_id(id: &str) -> Option<(String, Option<String>)> {
+    let rest = id.strip_prefix("fly:")?;
+    let mut parts = rest.splitn(2, ':');
+    let app = parts.next()?.to_string();
+    if app.is_empty() {
+        return None;
+    }
+    let machine = parts.next().map(|m| m.to_string());
+    Some((app, machine))
+}
+
+pub async fn execute_remote_command(
+    server_cfg: &ServerConfig,
+    command: &[String],
+) -> Result<Output> {
+    if server_cfg.provider == "fly" {
+        let server = lookup_provider_server(server_cfg).await?;
+        let (app, machine) = parse_fly_server_id(&server.id).with_context(|| {
+            format!(
+                "Fly server '{}' had unexpected id format '{}'",
+                server_cfg.name, server.id
+            )
+        })?;
+        let cmd_string = join_shell_command(command);
+
+        let mut fly_cmd = Command::new("flyctl");
+        fly_cmd.arg("ssh");
+        fly_cmd.arg("console");
+        fly_cmd.arg("--app");
+        fly_cmd.arg(app);
+        if let Some(machine) = machine {
+            fly_cmd.arg("--machine");
+            fly_cmd.arg(machine);
+        }
+        fly_cmd.arg("--command");
+        fly_cmd.arg(cmd_string);
+
+        return fly_cmd
+            .output()
+            .context("Failed to execute Fly SSH command");
+    }
+
+    let ip = resolve_server_public_ip(server_cfg).await?;
+    let mut ssh_cmd = build_ssh_command(
+        &server_cfg.ssh_key,
+        &ip,
+        &SshCommandOptions {
+            user: "root",
+            batch_mode: false,
+            connect_timeout_secs: None,
+            strict_host_key_checking: "no",
+            user_known_hosts_file: Some("/dev/null"),
+            log_level: "ERROR",
+        },
+    )?;
+    ssh_cmd.args(command);
+    ssh_cmd.output().context("Failed to execute SSH command")
+}
+
+pub async fn start_remote_session(server_cfg: &ServerConfig, command: &[String]) -> Result<i32> {
+    if server_cfg.provider == "fly" {
+        let server = lookup_provider_server(server_cfg).await?;
+        let (app, machine) = parse_fly_server_id(&server.id).with_context(|| {
+            format!(
+                "Fly server '{}' had unexpected id format '{}'",
+                server_cfg.name, server.id
+            )
+        })?;
+
+        let mut fly_cmd = Command::new("flyctl");
+        fly_cmd.arg("ssh");
+        fly_cmd.arg("console");
+        fly_cmd.arg("--app");
+        fly_cmd.arg(app);
+        if let Some(machine) = machine {
+            fly_cmd.arg("--machine");
+            fly_cmd.arg(machine);
+        }
+        if !command.is_empty() {
+            fly_cmd.arg("--command");
+            fly_cmd.arg(join_shell_command(command));
+        }
+        let status = fly_cmd
+            .status()
+            .context("Failed to start Fly SSH session")?;
+        return Ok(status.code().unwrap_or(1));
+    }
+
+    let ip = resolve_server_public_ip(server_cfg).await?;
+    let mut ssh_cmd = build_ssh_command(
+        &server_cfg.ssh_key,
+        &ip,
+        &SshCommandOptions {
+            user: "root",
+            batch_mode: false,
+            connect_timeout_secs: None,
+            strict_host_key_checking: "no",
+            user_known_hosts_file: Some("/dev/null"),
+            log_level: "ERROR",
+        },
+    )?;
+    ssh_cmd.args(command);
+    let status = ssh_cmd.status().context("Failed to start SSH session")?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub async fn lookup_provider_server(server_cfg: &ServerConfig) -> Result<Server> {
@@ -98,7 +225,10 @@ pub fn resolve_identity_path(ssh_key: &str) -> Result<Option<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ssh_command, resolve_identity_path, SshCommandOptions};
+    use super::{
+        build_ssh_command, join_shell_command, parse_fly_server_id, resolve_identity_path,
+        SshCommandOptions,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -162,5 +292,22 @@ mod tests {
             args.last().is_some_and(|last| last == "root@203.0.113.10"),
             "expected target at end, args: {args:?}"
         );
+    }
+
+    #[test]
+    fn join_shell_command_quotes_arguments() {
+        let cmd = join_shell_command(&[
+            "docker".to_string(),
+            "exec".to_string(),
+            "name with spaces".to_string(),
+        ]);
+        assert_eq!(cmd, "docker exec 'name with spaces'");
+    }
+
+    #[test]
+    fn parse_fly_server_id_parses_app_and_machine() {
+        let parsed = parse_fly_server_id("fly:my-app:abc123").expect("id should parse");
+        assert_eq!(parsed.0, "my-app");
+        assert_eq!(parsed.1.as_deref(), Some("abc123"));
     }
 }

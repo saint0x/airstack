@@ -1,5 +1,5 @@
 use crate::output;
-use crate::ssh_utils::{build_ssh_command, resolve_server_public_ip, SshCommandOptions};
+use crate::ssh_utils::{execute_remote_command, start_remote_session};
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -8,7 +8,7 @@ use tracing::info;
 #[derive(Debug, Serialize)]
 struct SshOutput {
     target: String,
-    ip: String,
+    endpoint: String,
     command: Vec<String>,
     exit_code: i32,
     stdout: String,
@@ -30,33 +30,18 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
         .find(|s| s.name == target)
         .with_context(|| format!("Server '{}' not found in configuration", target))?;
 
-    let ip = resolve_server_public_ip(server_config).await?;
+    let endpoint = if server_config.provider == "fly" {
+        "flyctl-ssh".to_string()
+    } else {
+        "ssh".to_string()
+    };
 
-    output::line(format!("🔌 Connecting to {} ({})", target, ip));
-
-    let mut ssh_cmd = build_ssh_command(
-        &server_config.ssh_key,
-        &ip,
-        &SshCommandOptions {
-            user: "root",
-            batch_mode: false,
-            connect_timeout_secs: None,
-            strict_host_key_checking: "no",
-            user_known_hosts_file: Some("/dev/null"),
-            log_level: "ERROR",
-        },
-    )?;
+    output::line(format!("🔌 Connecting to {} via {}", target, endpoint));
 
     // Add command if specified
     if !command.is_empty() {
-        if output::is_json() {
-            // continue; JSON payload emitted after execution
-        }
-        ssh_cmd.args(&command);
-
         output::line(format!("🔧 Executing: {}", command.join(" ")));
-
-        let output = ssh_cmd.output().context("Failed to execute SSH command")?;
+        let output = execute_remote_command(server_config, &command).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -64,7 +49,7 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
         if output::is_json() {
             output::emit_json(&SshOutput {
                 target: target.to_string(),
-                ip: ip.to_string(),
+                endpoint: endpoint.clone(),
                 command: command.clone(),
                 exit_code: output.status.code().unwrap_or(1),
                 stdout,
@@ -91,11 +76,10 @@ pub async fn run(config_path: &str, target: &str, command: Vec<String>) -> Resul
         }
         // Interactive SSH session
         output::line("🖥️  Starting interactive SSH session...");
+        let code = start_remote_session(server_config, &[]).await?;
 
-        let status = ssh_cmd.status().context("Failed to start SSH session")?;
-
-        if !status.success() {
-            anyhow::bail!("SSH session failed with exit code: {:?}", status.code());
+        if code != 0 {
+            anyhow::bail!("SSH session failed with exit code: {}", code);
         }
     }
 

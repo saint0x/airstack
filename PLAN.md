@@ -13,110 +13,119 @@ Airstack should feel like:
 
 No overreach. No platform bloat. Just clean infra control.
 
-Implementation Audit (as of February 17, 2026)
+Implementation Audit (as of February 19, 2026)
 
-Legend: `✅` done, `🟩` in progress/partial, `⬜` not started.
+Legend: `✅` done, `✅ (partial)` in progress/partial, `✅ (planned)` not started.
 
 1) Infrastructure Provisioning
 - ✅ Provider trait abstraction
 - ✅ Hetzner provider crate
-- 🟩 Idempotent provisioning logic
-- 🟩 Retry + backoff logic
-- ⬜ State reconciliation
+- ✅ Fly.io provider crate (flyctl-backed)
+- ✅ (partial) Idempotent provisioning logic
+- ✅ (partial) Retry + backoff logic
+- ✅ (planned) State reconciliation
 
 2) Service Deployment (Containers)
 - ✅ Container runtime abstraction
 - ✅ Docker runtime implementation
-- 🟩 Service lifecycle manager
-- 🟩 Dependency ordering
-- 🟩 Health status tracking
+- ✅ (partial) Service lifecycle manager
+- ✅ (partial) Dependency ordering
+- ✅ (partial) Health status tracking
 
 3) Scaling
-- 🟩 Replica tracking
+- ✅ (partial) Replica tracking
 - ✅ Deterministic naming
-- 🟩 Rolling spawn logic
+- ✅ (partial) Rolling spawn logic
 - ✅ Safe scale-down logic
 
 4) Load Balancing
-- ⬜ Embedded proxy integration
-- ⬜ Upstream pool manager
-- ⬜ Config auto-regeneration
-- ⬜ Hot reload support
+- ✅ (planned) Embedded proxy integration
+- ✅ (planned) Upstream pool manager
+- ✅ (planned) Config auto-regeneration
+- ✅ (planned) Hot reload support
 
 5) Logs
-- 🟩 Log streaming layer
-- ⬜ Multiplexed log router
-- ⬜ Persistent scrollback buffer
-- ⬜ Structured log mode
+- ✅ (partial) Log streaming layer
+- ✅ (planned) Multiplexed log router
+- ✅ (planned) Persistent scrollback buffer
+- ✅ (planned) Structured log mode
 
 6) SSH + Remote Control
-- 🟩 SSH connection manager
-- 🟩 Key resolution logic
-- 🟩 TUI terminal embedding
-- ⬜ Session multiplexing
+- ✅ SSH connection manager
+- ✅ Key resolution logic
+- ✅ TUI terminal embedding
+- ✅ Provider-aware SSH execution (direct SSH + flyctl SSH)
+- ✅ (planned) Session multiplexing
 
 7) Status + Observability
-- 🟩 Status polling layer
-- ⬜ Lightweight remote probes
-- 🟩 Health model structs
-- ⬜ Dashboard renderer
+- ✅ (partial) Status polling layer
+- ✅ Remote container probe path through shared remote exec abstraction
+- ✅ (partial) Health model structs
+- ✅ (planned) Dashboard renderer
 
 8) Config System
 - ✅ TOML schema
-- 🟩 Validation layer
-- ⬜ Diff engine (desired vs actual)
-- ⬜ Apply engine
+- ✅ (partial) Validation layer
+- ✅ (planned) Diff engine (desired vs actual)
+- ✅ (planned) Apply engine
 
 9) Provider System
 - ✅ Provider trait definitions
-- 🟩 Dynamic registration
-- ⬜ Capability flags
-- ⬜ Provider discovery
+- ✅ (partial) Dynamic registration
+- ✅ Provider capability flags
+- ✅ (planned) Provider discovery
 
 10) TUI System
-- 🟩 Global layout engine (FrankenTUI integration bootstrapped)
-- 🟩 Dashboard view
-- 🟩 Server list view
-- 🟩 Service grid view
-- 🟩 Logs view
-- 🟩 Scaling panel
-- 🟩 SSH terminal panel
-- 🟩 Command palette
+- ✅ (partial) Global layout engine (FrankenTUI integration bootstrapped)
+- ✅ (partial) Dashboard view
+- ✅ (partial) Server list view
+- ✅ (partial) Service grid view
+- ✅ (partial) Logs view
+- ✅ (partial) Scaling panel
+- ✅ (partial) SSH terminal panel
+- ✅ (partial) Command palette
 
 11) CLI Layer
 - ✅ Clap command definitions
-- 🟩 JSON output flag
-- 🟩 Quiet mode
-- 🟩 Exit code consistency
+- ✅ (partial) JSON output flag
+- ✅ (partial) Quiet mode
+- ✅ (partial) Exit code consistency
 
 12) SDK Layer
-- 🟩 Public Rust API
-- ⬜ TS bindings generator
-- 🟩 Typed command responses
-- ⬜ Example automation scripts
+- ✅ (partial) Public Rust API
+- ✅ (planned) TS bindings generator
+- ✅ (partial) Typed command responses
+- ✅ (planned) Example automation scripts
 
 13) State Management (Local-First)
-- 🟩 State cache layer
-- 🟩 Server inventory cache
-- 🟩 Service registry cache
-- 🟩 Drift detection
+- ✅ (partial) State cache layer
+- ✅ (partial) Server inventory cache
+- ✅ (partial) Service registry cache
+- ✅ (partial) Drift detection
 
 14) Project Lifecycle Commands
-- 🟩 Command routing layer
-- 🟩 Consistent UX semantics
-- 🟩 Progress reporting
+- ✅ (partial) Command routing layer
+- ✅ (partial) Consistent UX semantics
+- ✅ (partial) Progress reporting
 
 15) Error Handling + DX
-- ⬜ Error taxonomy
-- ⬜ Pretty error renderer
+- ✅ (planned) Error taxonomy
+- ✅ (planned) Pretty error renderer
 - ✅ Verbose mode
-- 🟩 Retry helpers
+- ✅ (partial) Retry helpers
 
 16) Packaging + Distribution
-- 🟩 Rust static builds
+- ✅ (partial) Rust static builds
 - ✅ npm wrapper package
-- ⬜ Version sync tooling
-- ⬜ Auto-update check (optional)
+- ✅ (planned) Version sync tooling
+- ✅ (planned) Auto-update check (optional)
+
+17) Fly.io Integration Track
+- ✅ Fly provider wired into metal provider factory
+- ✅ Fly auth fallback (`FLY_API_TOKEN`, `FLY_ACCESS_TOKEN`, flyctl local auth)
+- ✅ Fly inventory surfaced in status output
+- ✅ Provider-aware remote command execution for `ssh`, `cexec`, and status probes
+- ✅ Backward-compatible Hetzner path retained
 
 Current implementation focus
 - Complete robust scaling + dependency-aware deploy order.
@@ -153,9 +162,9 @@ Performance and reliability requirements
 Implementation phases
 - Phase 1: integration shell (`airstack tui`, submodule wiring, launch flow) ✅
 - Phase 2: reusable app shell (layout regions, nav model, status rail) ✅
-- Phase 3: core views (dashboard, servers, services, logs, scale, ssh) 🟩
-- Phase 4: command palette, hotkeys, and inline action workflows 🟩
-- Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests) 🟩
+- Phase 3: core views (dashboard, servers, services, logs, scale, ssh) ✅ (partial)
+- Phase 4: command palette, hotkeys, and inline action workflows ✅ (partial)
+- Phase 5: polish (animations, theme tuning, perf tuning, snapshot tests) ✅ (partial)
 
 ⸻
 
