@@ -540,10 +540,9 @@ async fn inspect_remote_containers_for_server(
     server_cfg: &ServerConfig,
 ) -> Result<Vec<RemoteContainerRecord>> {
     let command = vec![
-        "docker".to_string(),
-        "ps".to_string(),
-        "--format".to_string(),
-        "{{json .}}".to_string(),
+        "sh".to_string(),
+        "-lc".to_string(),
+        "docker ps --format '{{json .}}'".to_string(),
     ];
     let out = execute_remote_command(server_cfg, &command).await?;
     if !out.status.success() {

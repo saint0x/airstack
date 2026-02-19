@@ -19,6 +19,22 @@ server_type = "cpx11"
 ssh_key = "~/.ssh/id_ed25519.pub"
 floating_ip = false
 
+[[infra.servers]]
+name = "synthesys-backend"
+provider = "fly"
+region = "ewr"
+server_type = "shared-cpu-1x"
+ssh_key = "~/.ssh/id_ed25519.pub"
+floating_ip = false
+
+[[infra.servers]]
+name = "flywatch"
+provider = "fly"
+region = "iad"
+server_type = "shared-cpu-1x"
+ssh_key = "~/.ssh/id_ed25519.pub"
+floating_ip = false
+
 [services.database]
 image = "postgres:15"
 ports = [5432]
