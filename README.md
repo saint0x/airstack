@@ -61,7 +61,7 @@ depends_on = ["nginx"]
 ```bash
 # Set your Hetzner API token
 export HETZNER_API_KEY="your-token-here"
-# (also supported: HETZNER_TOKEN)
+# (also supported: HETZNER_API_TOKEN, HETZNER_TOKEN)
 
 # Provision infrastructure
 airstack up
@@ -77,6 +77,14 @@ airstack scale app 3
 # Check status
 airstack status
 ```
+
+AirStack also loads a global env file (first match):
+- `$AIRSTACK_ENV_FILE`
+- `$AIRSTACK_HOME/.env`
+- `~/.airstack/.env`
+- `~/.config/airstack/.env`
+
+This lets you keep provider keys in one AirStack-local place instead of per-project `.env` files.
 
 ## Commands
 
@@ -174,7 +182,7 @@ TUI views:
 Currently supported:
 
 - **Hetzner Cloud** (`hetzner`)
-  - Set `HETZNER_API_KEY` (or `HETZNER_TOKEN`) environment variable
+  - Set `HETZNER_API_KEY` (or `HETZNER_API_TOKEN` / `HETZNER_TOKEN`) environment variable
   - Supports all server types and regions
 - **Fly.io Machines** (`fly`)
   - Uses `flyctl` for provider operations

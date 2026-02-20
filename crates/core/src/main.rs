@@ -1,3 +1,4 @@
+use airstack_config::AirstackConfig;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::{info, Level};
@@ -6,6 +7,7 @@ use tracing_subscriber::FmtSubscriber;
 mod commands;
 mod dependencies;
 mod deploy_runtime;
+mod env_loader;
 mod output;
 mod retry;
 mod secrets_store;
@@ -27,10 +29,9 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Configuration file path",
-        default_value = "airstack.toml"
+        help = "Configuration file path (default: ./airstack.toml in current directory)"
     )]
-    config: String,
+    config: Option<String>,
 
     #[arg(long, global = true, help = "Perform a dry run without making changes")]
     dry_run: bool,
@@ -216,7 +217,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = dotenvy::dotenv();
+    env_loader::load_airstack_env();
 
     let cli = Cli::parse();
     if let Some(env_name) = &cli.env {
@@ -246,11 +247,20 @@ async fn main() -> Result<()> {
 
     info!("Airstack CLI v{}", env!("CARGO_PKG_VERSION"));
 
+    let config_path = match (&cli.command, &cli.config) {
+        (Commands::Init { .. }, Some(path)) => path.clone(),
+        (Commands::Init { .. }, None) => "airstack.toml".to_string(),
+        (_, Some(path)) => path.clone(),
+        (_, None) => AirstackConfig::get_config_path()?
+            .to_string_lossy()
+            .to_string(),
+    };
+
     match cli.command {
-        Commands::Init { name } => commands::init::run(name, &cli.config).await,
+        Commands::Init { name } => commands::init::run(name, &config_path).await,
         Commands::Up { target, provider } => {
             commands::up::run(
-                &cli.config,
+                &config_path,
                 target,
                 provider,
                 cli.dry_run,
@@ -259,7 +269,7 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Destroy { target, force } => {
-            commands::destroy::run(&cli.config, target, force || cli.yes).await
+            commands::destroy::run(&config_path, target, force || cli.yes).await
         }
         Commands::Deploy {
             service,
@@ -271,7 +281,7 @@ async fn main() -> Result<()> {
             canary_seconds,
         } => {
             commands::deploy::run(
-                &cli.config,
+                &config_path,
                 &service,
                 target,
                 cli.allow_local_deploy,
@@ -287,46 +297,46 @@ async fn main() -> Result<()> {
             server,
             container,
             command,
-        } => commands::cexec::run(&cli.config, &server, &container, command).await,
+        } => commands::cexec::run(&config_path, &server, &container, command).await,
         Commands::Scale { service, replicas } => {
-            commands::scale::run(&cli.config, &service, replicas).await
+            commands::scale::run(&config_path, &service, replicas).await
         }
-        Commands::Cli => commands::cli::run(&cli.config).await,
-        Commands::Tui { view } => commands::tui::run(&cli.config, view).await,
+        Commands::Cli => commands::cli::run(&config_path).await,
+        Commands::Tui { view } => commands::tui::run(&config_path, view).await,
         Commands::Status {
             detailed,
             probe,
             source,
-        } => commands::status::run(&cli.config, detailed, probe, &source).await,
+        } => commands::status::run(&config_path, detailed, probe, &source).await,
         Commands::Ssh { target, command } => {
-            commands::ssh::run(&cli.config, &target, command).await
+            commands::ssh::run(&config_path, &target, command).await
         }
         Commands::Logs {
             service,
             follow,
             tail,
-        } => commands::logs::run(&cli.config, &service, follow, tail).await,
+        } => commands::logs::run(&config_path, &service, follow, tail).await,
         Commands::Plan { include_destroy } => {
-            commands::plan::run(&cli.config, include_destroy).await
+            commands::plan::run(&config_path, include_destroy).await
         }
-        Commands::Apply => commands::apply::run(&cli.config, cli.allow_local_deploy).await,
-        Commands::Edge { command } => commands::edge::run(&cli.config, command).await,
-        Commands::Doctor => commands::doctor::run(&cli.config).await,
-        Commands::GoLive(args) => commands::golive::run(&cli.config, args).await,
-        Commands::Drift => commands::drift::run(&cli.config).await,
-        Commands::Registry { command } => commands::registry::run(&cli.config, command).await,
+        Commands::Apply => commands::apply::run(&config_path, cli.allow_local_deploy).await,
+        Commands::Edge { command } => commands::edge::run(&config_path, command).await,
+        Commands::Doctor => commands::doctor::run(&config_path).await,
+        Commands::GoLive(args) => commands::golive::run(&config_path, args).await,
+        Commands::Drift => commands::drift::run(&config_path).await,
+        Commands::Registry { command } => commands::registry::run(&config_path, command).await,
         Commands::Reconcile(mut args) => {
             args.allow_local_deploy = cli.allow_local_deploy;
-            commands::reconcile::run(&cli.config, args).await
+            commands::reconcile::run(&config_path, args).await
         }
-        Commands::Runbook => commands::runbook::run(&cli.config).await,
-        Commands::Secrets { command } => commands::secrets::run(&cli.config, command).await,
-        Commands::Backup { command } => commands::backup::run(&cli.config, command).await,
-        Commands::Release(args) => commands::release::run(&cli.config, args).await,
+        Commands::Runbook => commands::runbook::run(&config_path).await,
+        Commands::Secrets { command } => commands::secrets::run(&config_path, command).await,
+        Commands::Backup { command } => commands::backup::run(&config_path, command).await,
+        Commands::Release(args) => commands::release::run(&config_path, args).await,
         Commands::Ship(mut args) => {
             args.allow_local_deploy = cli.allow_local_deploy;
-            commands::ship::run(&cli.config, args).await
+            commands::ship::run(&config_path, args).await
         }
-        Commands::SupportBundle(args) => commands::support_bundle::run(&cli.config, args).await,
+        Commands::SupportBundle(args) => commands::support_bundle::run(&config_path, args).await,
     }
 }

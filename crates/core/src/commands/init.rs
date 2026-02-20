@@ -53,7 +53,9 @@ pub async fn run(name: Option<String>, config_path: &str) -> Result<()> {
             "  1. Edit {} to configure your infrastructure",
             config_path
         ));
-        output::line("  2. Set up your provider credentials (e.g., HETZNER_TOKEN for Hetzner)");
+        output::line(
+            "  2. Set up provider credentials in global AirStack env (~/.airstack/.env), e.g. HETZNER_API_KEY",
+        );
         output::line("  3. Run 'airstack up' to provision your infrastructure");
     }
 

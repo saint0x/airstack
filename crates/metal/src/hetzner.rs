@@ -94,11 +94,13 @@ impl HetznerProvider {
             token.clone()
         } else if let Ok(token) = std::env::var("HETZNER_API_KEY") {
             token
+        } else if let Ok(token) = std::env::var("HETZNER_API_TOKEN") {
+            token
         } else if let Ok(token) = std::env::var("HETZNER_TOKEN") {
             token
         } else {
             anyhow::bail!(
-                "Hetzner API token not found in config or env vars HETZNER_API_KEY/HETZNER_TOKEN"
+                "Hetzner API token not found in config or env vars HETZNER_API_KEY/HETZNER_API_TOKEN/HETZNER_TOKEN"
             );
         };
 
