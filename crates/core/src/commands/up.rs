@@ -12,9 +12,14 @@ use crate::deploy_runtime::{
     deploy_service, evaluate_service_health, existing_service_image, resolve_target,
     rollback_service,
 };
+use crate::infra_preflight::{
+    check_ssh_key_path, format_validation_error, is_permanent_provider_error,
+    resolve_server_request,
+};
 use crate::output;
-use crate::retry::retry_with_backoff;
+use crate::retry::{retry_with_backoff_classified, RetryDecision};
 use crate::state::{HealthState, LocalState, ServerState, ServiceState};
+use airstack_metal::CapacityResolveOptions;
 
 #[derive(Debug, Serialize)]
 struct UpServerRecord {
@@ -46,6 +51,8 @@ pub async fn run(
     _provider: Option<String>,
     dry_run: bool,
     allow_local_deploy: bool,
+    auto_fallback: bool,
+    resolve_capacity: bool,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
@@ -65,6 +72,18 @@ pub async fn run(
     if let Some(infra) = &config.infra {
         for server in &infra.servers {
             info!("Planning server: {} ({})", server.name, server.server_type);
+            check_ssh_key_path(server)?;
+            let preflight = resolve_server_request(
+                server,
+                CapacityResolveOptions {
+                    auto_fallback,
+                    resolve_capacity,
+                },
+            )
+            .await?;
+            if !preflight.validation.valid {
+                anyhow::bail!("{}", format_validation_error(server, &preflight));
+            }
 
             if dry_run {
                 server_records.push(UpServerRecord {
@@ -76,7 +95,7 @@ pub async fn run(
                 });
                 output::line(format!(
                     "Would create server {} ({}, {})",
-                    server.name, server.server_type, server.region
+                    server.name, server.server_type, preflight.request.region
                 ));
                 continue;
             }
@@ -125,15 +144,22 @@ pub async fn run(
             let request = CreateServerRequest {
                 name: server.name.clone(),
                 server_type: server.server_type.clone(),
-                region: server.region.clone(),
+                region: preflight.request.region.clone(),
                 ssh_key: server.ssh_key.clone(),
                 attach_floating_ip: server.floating_ip.unwrap_or(false),
             };
 
-            match retry_with_backoff(
+            match retry_with_backoff_classified(
                 3,
                 Duration::from_millis(300),
                 &format!("create server '{}'", server.name),
+                |err| {
+                    if is_permanent_provider_error(err) {
+                        RetryDecision::Stop
+                    } else {
+                        RetryDecision::Retry
+                    }
+                },
                 |_| metal_provider.create_server(request.clone()),
             )
             .await

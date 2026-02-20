@@ -1,6 +1,8 @@
+use crate::infra_preflight::{check_ssh_key_path, format_validation_error, resolve_server_request};
 use crate::output;
 use airstack_config::AirstackConfig;
 use airstack_metal::get_provider as get_metal_provider;
+use airstack_metal::CapacityResolveOptions;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -19,7 +21,12 @@ struct PlanOutput {
     actions: Vec<PlanAction>,
 }
 
-pub async fn run(config_path: &str, include_destroy: bool) -> Result<()> {
+pub async fn run(
+    config_path: &str,
+    include_destroy: bool,
+    auto_fallback: bool,
+    resolve_capacity: bool,
+) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut actions = Vec::new();
 
@@ -69,6 +76,30 @@ pub async fn run(config_path: &str, include_destroy: bool) -> Result<()> {
                     });
                 }
             }
+        }
+
+        for server in &infra.servers {
+            check_ssh_key_path(server)?;
+            let preflight = resolve_server_request(
+                server,
+                CapacityResolveOptions {
+                    auto_fallback,
+                    resolve_capacity,
+                },
+            )
+            .await?;
+            if !preflight.validation.valid {
+                anyhow::bail!("{}", format_validation_error(server, &preflight));
+            }
+            actions.push(PlanAction {
+                resource_type: "infra-preflight".to_string(),
+                resource: server.name.clone(),
+                action: "validate".to_string(),
+                reason: format!(
+                    "server_type={} region={}",
+                    preflight.request.server_type, preflight.request.region
+                ),
+            });
         }
     }
 

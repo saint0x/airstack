@@ -1,4 +1,7 @@
-use crate::{CreateServerRequest, MetalProvider, ProviderCapabilities, Server, ServerStatus};
+use crate::{
+    CapacityResolveOptions, CreateRequestValidation, CreateServerRequest, MetalProvider,
+    ProviderCapabilities, Server, ServerStatus,
+};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -52,6 +55,7 @@ struct FlyIp {
 }
 
 impl FlyProvider {
+    const DEFAULT_REGION: &'static str = "iad";
     pub fn new(config: HashMap<String, String>) -> Result<Self> {
         let token = config
             .get("api_token")
@@ -370,6 +374,33 @@ impl MetalProvider for FlyProvider {
             server_type: Self::server_type_for_machine(&machine),
             region: machine.region.unwrap_or_else(|| "global".to_string()),
         })
+    }
+
+    async fn validate_create_request(
+        &self,
+        _request: &CreateServerRequest,
+    ) -> Result<CreateRequestValidation> {
+        Ok(CreateRequestValidation {
+            valid: true,
+            reason: None,
+            valid_regions_for_type: Vec::new(),
+            valid_server_types_for_region: Vec::new(),
+            suggested_region: None,
+            suggested_server_type: None,
+            permanent: false,
+        })
+    }
+
+    async fn resolve_create_request(
+        &self,
+        request: &CreateServerRequest,
+        _opts: CapacityResolveOptions,
+    ) -> Result<CreateServerRequest> {
+        let mut resolved = request.clone();
+        if resolved.region.is_empty() || resolved.region == "auto" {
+            resolved.region = Self::DEFAULT_REGION.to_string();
+        }
+        Ok(resolved)
     }
 
     async fn destroy_server(&self, id: &str) -> Result<()> {

@@ -12,7 +12,12 @@ struct InitOutput {
     created: bool,
 }
 
-pub async fn run(name: Option<String>, config_path: &str) -> Result<()> {
+pub async fn run(
+    name: Option<String>,
+    provider: Option<String>,
+    preset: Option<String>,
+    config_path: &str,
+) -> Result<()> {
     let project_name = name.unwrap_or_else(|| {
         std::env::current_dir()
             .ok()
@@ -35,7 +40,32 @@ pub async fn run(name: Option<String>, config_path: &str) -> Result<()> {
 
     // Replace the project name in the generated config
     let content = std::fs::read_to_string(config_file)?;
-    let updated_content = content.replace("my-project", &project_name);
+    let mut updated_content = content.replace("my-project", &project_name);
+    if provider.as_deref() == Some("hetzner") {
+        updated_content = updated_content
+            .replace("region = \"nbg1\"", "region = \"ash\"")
+            .replace("server_type = \"cx21\"", "server_type = \"cpx21\"");
+    }
+    if provider.as_deref() == Some("fly") {
+        updated_content = updated_content
+            .replace("provider = \"hetzner\"", "provider = \"fly\"")
+            .replace("region = \"nbg1\"", "region = \"iad\"")
+            .replace("server_type = \"cx21\"", "server_type = \"shared-cpu-1x\"");
+    }
+
+    if preset.as_deref() == Some("clickhouse") {
+        updated_content.push_str(
+            r#"
+
+[services.clickhouse]
+image = "clickhouse/clickhouse-server:24.8"
+ports = [8123, 9000]
+env = { CLICKHOUSE_DB = "analytics" }
+volumes = ["./data/clickhouse:/var/lib/clickhouse"]
+healthcheck = { command = ["clickhouse-client", "--query", "SELECT 1"], interval_secs = 10, retries = 12, timeout_secs = 5 }
+"#,
+        );
+    }
     std::fs::write(config_file, updated_content)?;
 
     if output::is_json() {
@@ -47,6 +77,12 @@ pub async fn run(name: Option<String>, config_path: &str) -> Result<()> {
     } else {
         output::line(format!("✅ Initialized Airstack project: {}", project_name));
         output::line(format!("📝 Configuration created: {}", config_path));
+        if let Some(provider) = provider {
+            output::line(format!("🔌 Provider preset: {}", provider));
+        }
+        if let Some(preset) = preset {
+            output::line(format!("📦 Service preset: {}", preset));
+        }
         output::line("");
         output::line("Next steps:");
         output::line(format!(

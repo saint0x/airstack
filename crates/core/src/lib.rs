@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod dependencies;
 pub mod deploy_runtime;
+pub mod infra_preflight;
 pub mod output;
 pub mod retry;
 pub mod secrets_store;

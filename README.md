@@ -90,8 +90,8 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 
 | Command | Description |
 |---------|-------------|
-| `airstack init [name]` | Initialize a new project |
-| `airstack up` | Provision infrastructure |
+| `airstack init [name] [--provider hetzner|fly] [--preset clickhouse]` | Initialize a project with provider/service presets |
+| `airstack up [--auto-fallback] [--resolve-capacity]` | Provision infrastructure with optional auto capacity resolution |
 | `airstack destroy` | Destroy infrastructure |
 | `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (optional latest-code + strategy mode) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
@@ -101,7 +101,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode |
 | `airstack ssh &lt;server&gt;` | SSH into a server |
 | `airstack logs &lt;service&gt;` | Show service logs |
-| `airstack plan` | Preview create/update/destroy and deploy actions |
+| `airstack plan [--auto-fallback] [--resolve-capacity]` | Preview create/update/destroy and deploy actions with infra compatibility preflight |
 | `airstack apply` | Apply desired infrastructure and services |
 | `airstack edge &lt;plan|apply|validate|status&gt;` | Reverse-proxy workflows |
 | `airstack edge diagnose` | TLS/ACME diagnosis with remediation hints |
@@ -184,6 +184,7 @@ Currently supported:
 - **Hetzner Cloud** (`hetzner`)
   - Set `HETZNER_API_KEY` (or `HETZNER_API_TOKEN` / `HETZNER_TOKEN`) environment variable
   - Supports all server types and regions
+  - Region policy: if `region` is omitted, default is `ash`; `region="auto"` or `--resolve-capacity` picks a valid region for the requested server type
 - **Fly.io Machines** (`fly`)
   - Uses `flyctl` for provider operations
   - Auth resolution order: provider token -> `FLY_API_TOKEN` -> `FLY_ACCESS_TOKEN` -> local `flyctl auth`

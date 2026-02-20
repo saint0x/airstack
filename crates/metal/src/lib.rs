@@ -43,6 +43,23 @@ pub struct ProviderCapabilities {
     pub supports_server_destroy: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateRequestValidation {
+    pub valid: bool,
+    pub reason: Option<String>,
+    pub valid_regions_for_type: Vec<String>,
+    pub valid_server_types_for_region: Vec<String>,
+    pub suggested_region: Option<String>,
+    pub suggested_server_type: Option<String>,
+    pub permanent: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CapacityResolveOptions {
+    pub auto_fallback: bool,
+    pub resolve_capacity: bool,
+}
+
 #[async_trait::async_trait]
 pub trait MetalProvider: Send + Sync {
     fn capabilities(&self) -> ProviderCapabilities;
@@ -52,6 +69,27 @@ pub trait MetalProvider: Send + Sync {
     async fn list_servers(&self) -> Result<Vec<Server>>;
     async fn upload_ssh_key(&self, name: &str, public_key_path: &str) -> Result<String>;
     async fn attach_floating_ip(&self, server_id: &str) -> Result<String>;
+    async fn validate_create_request(
+        &self,
+        _request: &CreateServerRequest,
+    ) -> Result<CreateRequestValidation> {
+        Ok(CreateRequestValidation {
+            valid: true,
+            reason: None,
+            valid_regions_for_type: Vec::new(),
+            valid_server_types_for_region: Vec::new(),
+            suggested_region: None,
+            suggested_server_type: None,
+            permanent: false,
+        })
+    }
+    async fn resolve_create_request(
+        &self,
+        request: &CreateServerRequest,
+        _opts: CapacityResolveOptions,
+    ) -> Result<CreateServerRequest> {
+        Ok(request.clone())
+    }
 }
 
 pub fn get_provider(

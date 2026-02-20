@@ -1,8 +1,11 @@
-use crate::{CreateServerRequest, MetalProvider, ProviderCapabilities, Server, ServerStatus};
+use crate::{
+    CapacityResolveOptions, CreateRequestValidation, CreateServerRequest, MetalProvider,
+    ProviderCapabilities, Server, ServerStatus,
+};
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tracing::{debug, info};
 
 #[derive(Debug)]
@@ -89,6 +92,9 @@ struct CreateServerPublicNet {
 }
 
 impl HetznerProvider {
+    const DEFAULT_REGION: &'static str = "ash";
+    const PREFERRED_REGIONS: [&'static str; 5] = ["ash", "hel1", "nbg1", "fsn1", "hil"];
+
     pub fn new(config: HashMap<String, String>) -> Result<Self> {
         let api_token = if let Some(token) = config.get("api_token") {
             token.clone()
@@ -169,6 +175,72 @@ impl HetznerProvider {
 
         Ok(found.map(|k| k.id.to_string()))
     }
+
+    async fn fetch_type_region_matrix(
+        &self,
+    ) -> Result<(
+        BTreeMap<String, BTreeSet<String>>,
+        BTreeMap<String, BTreeSet<String>>,
+    )> {
+        let response = self
+            .client
+            .get(format!("{}/server_types", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await
+            .context("Failed to send server_types request")?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to query Hetzner server types: {}", error_text);
+        }
+
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse Hetzner server types response")?;
+        let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut by_region: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+        let Some(server_types) = value.get("server_types").and_then(|v| v.as_array()) else {
+            return Ok((by_type, by_region));
+        };
+
+        for item in server_types {
+            let Some(type_name) = item.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let entry = by_type.entry(type_name.to_string()).or_default();
+
+            if let Some(prices) = item.get("prices").and_then(|v| v.as_array()) {
+                for price in prices {
+                    let loc = price.get("location");
+                    let region = loc
+                        .and_then(|l| l.get("name"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| loc.and_then(|v| v.as_str()));
+                    if let Some(region) = region {
+                        entry.insert(region.to_string());
+                        by_region
+                            .entry(region.to_string())
+                            .or_default()
+                            .insert(type_name.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok((by_type, by_region))
+    }
+
+    fn choose_preferred_region(available: &[String]) -> Option<String> {
+        for preferred in Self::PREFERRED_REGIONS {
+            if available.iter().any(|r| r == preferred) {
+                return Some(preferred.to_string());
+            }
+        }
+        available.first().cloned()
+    }
 }
 
 #[async_trait::async_trait]
@@ -241,6 +313,118 @@ impl MetalProvider for HetznerProvider {
             request.name, converted_server.id
         );
         Ok(converted_server)
+    }
+
+    async fn validate_create_request(
+        &self,
+        request: &CreateServerRequest,
+    ) -> Result<CreateRequestValidation> {
+        let (by_type, by_region) = self.fetch_type_region_matrix().await?;
+
+        let type_regions = by_type
+            .get(&request.server_type)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let region_types = if request.region.is_empty() {
+            Vec::new()
+        } else {
+            by_region
+                .get(&request.region)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+
+        if !by_type.contains_key(&request.server_type) {
+            let suggested_server_type = by_region
+                .get(&request.region)
+                .and_then(|types| types.iter().next().cloned())
+                .or_else(|| by_type.keys().next().cloned());
+            return Ok(CreateRequestValidation {
+                valid: false,
+                reason: Some(format!("unsupported server_type '{}'", request.server_type)),
+                valid_regions_for_type: type_regions,
+                valid_server_types_for_region: region_types,
+                suggested_region: Some(Self::DEFAULT_REGION.to_string()),
+                suggested_server_type,
+                permanent: true,
+            });
+        }
+
+        let region = if request.region.is_empty() {
+            Self::DEFAULT_REGION.to_string()
+        } else {
+            request.region.clone()
+        };
+        let valid = by_type
+            .get(&request.server_type)
+            .is_some_and(|regions| regions.contains(&region));
+        let suggested_region = if valid {
+            None
+        } else {
+            Self::choose_preferred_region(&type_regions)
+        };
+        Ok(CreateRequestValidation {
+            valid,
+            reason: if valid {
+                None
+            } else {
+                Some(format!(
+                    "server_type '{}' is not available in region '{}'",
+                    request.server_type, region
+                ))
+            },
+            valid_regions_for_type: type_regions,
+            valid_server_types_for_region: region_types,
+            suggested_region,
+            suggested_server_type: None,
+            permanent: !valid,
+        })
+    }
+
+    async fn resolve_create_request(
+        &self,
+        request: &CreateServerRequest,
+        opts: CapacityResolveOptions,
+    ) -> Result<CreateServerRequest> {
+        let mut resolved = request.clone();
+        if resolved.region.is_empty() {
+            resolved.region = Self::DEFAULT_REGION.to_string();
+        }
+
+        if resolved.region == "auto" || opts.resolve_capacity {
+            let validation = self
+                .validate_create_request(&CreateServerRequest {
+                    region: Self::DEFAULT_REGION.to_string(),
+                    ..resolved.clone()
+                })
+                .await?;
+            if let Some(region) = validation
+                .suggested_region
+                .or_else(|| Self::choose_preferred_region(&validation.valid_regions_for_type))
+            {
+                resolved.region = region;
+            } else if resolved.region == "auto" {
+                resolved.region = Self::DEFAULT_REGION.to_string();
+            }
+        }
+
+        let validation = self.validate_create_request(&resolved).await?;
+        if validation.valid {
+            return Ok(resolved);
+        }
+
+        if opts.resolve_capacity || opts.auto_fallback {
+            if let Some(region) = validation.suggested_region {
+                resolved.region = region;
+                return Ok(resolved);
+            }
+        }
+
+        Ok(resolved)
     }
 
     async fn destroy_server(&self, id: &str) -> Result<()> {

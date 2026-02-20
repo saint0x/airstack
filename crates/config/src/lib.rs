@@ -27,6 +27,7 @@ pub struct InfraConfig {
 pub struct ServerConfig {
     pub name: String,
     pub provider: String,
+    #[serde(default)]
     pub region: String,
     pub server_type: String,
     pub ssh_key: String,
@@ -94,8 +95,12 @@ impl AirstackConfig {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
 
-        let mut config: AirstackConfig =
-            toml::from_str(&content).with_context(|| "Failed to parse TOML configuration")?;
+        let mut config: AirstackConfig = match toml::from_str(&content) {
+            Ok(v) => v,
+            Err(err) => {
+                anyhow::bail!("Failed to parse TOML configuration: {}", err);
+            }
+        };
 
         if let Ok(env_name) = std::env::var("AIRSTACK_ENV") {
             if !env_name.is_empty() {
@@ -403,6 +408,51 @@ mod tests {
         AirstackConfig::init_example(&path).expect("example config should write");
         let loaded = AirstackConfig::load(&path).expect("example config should parse");
         assert_eq!(loaded.project.name, "my-project");
+        fs::remove_file(&path).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn load_allows_missing_region_and_defaults_empty() {
+        let path = unique_path("missing-region.toml");
+        let raw = r#"
+[project]
+name = "demo"
+
+[[infra.servers]]
+name = "web"
+provider = "hetzner"
+server_type = "cpx21"
+ssh_key = "~/.ssh/id_ed25519.pub"
+"#;
+        fs::write(&path, raw).expect("config write should succeed");
+        let loaded = AirstackConfig::load(&path).expect("config should parse");
+        assert_eq!(loaded.infra.unwrap().servers[0].region, "");
+        fs::remove_file(&path).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn load_fails_on_duplicate_key() {
+        let path = unique_path("duplicate-key.toml");
+        let raw = r#"
+[project]
+name = "demo"
+
+[[infra.servers]]
+name = "web"
+provider = "hetzner"
+region = "ash"
+region = "hel1"
+server_type = "cpx21"
+ssh_key = "~/.ssh/id_ed25519.pub"
+"#;
+        fs::write(&path, raw).expect("config write should succeed");
+        let err = AirstackConfig::load(&path).expect_err("duplicate key should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate")
+                && (msg.contains("line") || msg.contains("column") || msg.contains(":")),
+            "unexpected error: {msg}"
+        );
         fs::remove_file(&path).expect("cleanup should succeed");
     }
 }

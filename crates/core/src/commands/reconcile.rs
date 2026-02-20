@@ -38,6 +38,8 @@ pub async fn run(config_path: &str, args: ReconcileArgs) -> Result<()> {
             None,
             args.dry_run,
             args.allow_local_deploy,
+            false,
+            false,
         )
         .await?;
     }

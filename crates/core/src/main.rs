@@ -8,6 +8,7 @@ mod commands;
 mod dependencies;
 mod deploy_runtime;
 mod env_loader;
+mod infra_preflight;
 mod output;
 mod retry;
 mod secrets_store;
@@ -71,6 +72,10 @@ enum Commands {
     Init {
         #[arg(help = "Project name")]
         name: Option<String>,
+        #[arg(long, help = "Provider template (e.g., hetzner, fly)")]
+        provider: Option<String>,
+        #[arg(long, help = "Preset template (e.g., clickhouse)")]
+        preset: Option<String>,
     },
     #[command(about = "Provision infrastructure and deploy services")]
     Up {
@@ -78,6 +83,10 @@ enum Commands {
         target: Option<String>,
         #[arg(long, help = "Infrastructure provider")]
         provider: Option<String>,
+        #[arg(long, help = "Allow provider-aware fallback to default valid region")]
+        auto_fallback: bool,
+        #[arg(long, help = "Resolve server region/type capacity automatically")]
+        resolve_capacity: bool,
     },
     #[command(about = "Destroy infrastructure")]
     Destroy {
@@ -174,6 +183,10 @@ enum Commands {
     Plan {
         #[arg(long, help = "Include destroy actions for unmanaged resources")]
         include_destroy: bool,
+        #[arg(long, help = "Allow provider-aware fallback to default valid region")]
+        auto_fallback: bool,
+        #[arg(long, help = "Resolve server region/type capacity automatically")]
+        resolve_capacity: bool,
     },
     #[command(about = "Apply desired infrastructure and services")]
     Apply,
@@ -257,14 +270,25 @@ async fn main() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Init { name } => commands::init::run(name, &config_path).await,
-        Commands::Up { target, provider } => {
+        Commands::Init {
+            name,
+            provider,
+            preset,
+        } => commands::init::run(name, provider, preset, &config_path).await,
+        Commands::Up {
+            target,
+            provider,
+            auto_fallback,
+            resolve_capacity,
+        } => {
             commands::up::run(
                 &config_path,
                 target,
                 provider,
                 cli.dry_run,
                 cli.allow_local_deploy,
+                auto_fallback,
+                resolve_capacity,
             )
             .await
         }
@@ -316,8 +340,18 @@ async fn main() -> Result<()> {
             follow,
             tail,
         } => commands::logs::run(&config_path, &service, follow, tail).await,
-        Commands::Plan { include_destroy } => {
-            commands::plan::run(&config_path, include_destroy).await
+        Commands::Plan {
+            include_destroy,
+            auto_fallback,
+            resolve_capacity,
+        } => {
+            commands::plan::run(
+                &config_path,
+                include_destroy,
+                auto_fallback,
+                resolve_capacity,
+            )
+            .await
         }
         Commands::Apply => commands::apply::run(&config_path, cli.allow_local_deploy).await,
         Commands::Edge { command } => commands::edge::run(&config_path, command).await,

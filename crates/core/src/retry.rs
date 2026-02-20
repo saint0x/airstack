@@ -7,6 +7,12 @@ use tracing::warn;
 
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryDecision {
+    Retry,
+    Stop,
+}
+
 pub async fn retry_with_backoff<T, F, Fut>(
     attempts: usize,
     initial_delay: Duration,
@@ -48,13 +54,64 @@ where
     unreachable!("retry loop always returns before completion")
 }
 
+pub async fn retry_with_backoff_classified<T, F, Fut, C>(
+    attempts: usize,
+    initial_delay: Duration,
+    operation: &str,
+    mut classify: C,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = Result<T>>,
+    C: FnMut(&anyhow::Error) -> RetryDecision,
+{
+    if attempts == 0 {
+        anyhow::bail!("retry_with_backoff_classified requires attempts >= 1");
+    }
+
+    let mut delay = initial_delay;
+    for attempt in 1..=attempts {
+        match f(attempt).await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let decision = classify(&err);
+                if attempt == attempts || decision == RetryDecision::Stop {
+                    return Err(err).with_context(|| {
+                        if decision == RetryDecision::Stop {
+                            format!(
+                                "{} failed with non-retryable error on attempt {}",
+                                operation, attempt
+                            )
+                        } else {
+                            format!("{} failed after {} attempts", operation, attempts)
+                        }
+                    });
+                }
+
+                warn!(
+                    "{} failed on attempt {}/{}: {}. Retrying in {:?}",
+                    operation, attempt, attempts, err, delay
+                );
+
+                if !delay.is_zero() {
+                    sleep(delay).await;
+                }
+                delay = (delay * 2).min(MAX_BACKOFF);
+            }
+        }
+    }
+
+    unreachable!("retry loop always returns before completion")
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::retry_with_backoff;
+    use super::{retry_with_backoff, retry_with_backoff_classified, RetryDecision};
 
     #[tokio::test]
     async fn returns_success_without_retry() {
@@ -100,5 +157,24 @@ mod tests {
         assert!(err
             .to_string()
             .contains("broken-op failed after 2 attempts"));
+    }
+
+    #[tokio::test]
+    async fn stops_on_non_retryable_error() {
+        let err = retry_with_backoff_classified(
+            3,
+            Duration::ZERO,
+            "non-retryable-op",
+            |_| RetryDecision::Stop,
+            |_| async { Err::<(), _>(anyhow::anyhow!("invalid input")) },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("failed with non-retryable error on attempt 1"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -60,7 +60,8 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
                 let provider = read_optional(theme, "Provider (blank = config default)")?;
                 let target = read_optional(theme, "Target env (blank = default)")?;
                 run_and_continue(
-                    commands::up::run(config_path, target, provider, false, false).await,
+                    commands::up::run(config_path, target, provider, false, false, false, false)
+                        .await,
                 );
             }
             3 => {
@@ -198,7 +199,7 @@ async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
             ],
         )?;
         match choice {
-            0 => run_and_continue(commands::plan::run(config_path, false).await),
+            0 => run_and_continue(commands::plan::run(config_path, false, false, false).await),
             1 => run_and_continue(commands::apply::run(config_path, false).await),
             2 => run_and_continue(commands::doctor::run(config_path).await),
             3 => run_and_continue(
