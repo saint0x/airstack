@@ -44,6 +44,12 @@
     {
       "type": "proc_spawn",
       "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "provider", "profile", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
       "args": ["run", "-p", "airstack-core", "--", "status", "--help"],
       "expect_exit": 0
     },

@@ -3,6 +3,7 @@ pub mod dependencies;
 pub mod deploy_runtime;
 pub mod infra_preflight;
 pub mod output;
+pub mod provider_profiles;
 pub mod retry;
 pub mod secrets_store;
 pub mod ssh_utils;

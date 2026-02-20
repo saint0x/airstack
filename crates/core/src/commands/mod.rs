@@ -11,6 +11,7 @@ pub mod golive;
 pub mod init;
 pub mod logs;
 pub mod plan;
+pub mod provider;
 pub mod reconcile;
 pub mod registry;
 pub mod release;

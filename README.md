@@ -114,6 +114,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack runbook` | Print operational command runbook |
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
+| `airstack provider profile <list|show|set|use|remove|snapshot|status>` | First-class provider profile management (Fly and any provider/custom env context) |
 | `airstack release &lt;service&gt; [--push] [--update-config]` | Build/publish release images |
 | `airstack ship &lt;service&gt; [--push --update-config] [--strategy rolling\|bluegreen\|canary]` | Atomic release+deploy with rollback on deploy failure |
 
@@ -125,6 +126,33 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 - `--allow-local-deploy`: bypass remote-first deploy guard when infra exists
 - `up --local`: explicit local verification mode (skips infra provisioning)
 - `up --bootstrap-runtime`: install Docker on remote hosts before service deploy
+- `--provider-profile <provider>:<profile>`: override provider profile for current command
+
+### Provider Profiles
+
+Profiles are persisted in `~/.airstack/provider_profiles.json` and can inject provider-specific env vars per run.
+
+```bash
+# Snapshot current Fly config as work profile and activate it
+airstack provider profile snapshot fly work \
+  --source ~/.fly \
+  --config-env FLY_CONFIG_DIR \
+  --activate
+
+# After re-authenticating Fly to personal account, snapshot again
+airstack provider profile snapshot fly personal \
+  --source ~/.fly \
+  --config-env FLY_CONFIG_DIR
+
+# Switch active Fly profile
+airstack provider profile use fly personal
+
+# Run one command against a specific profile without changing active profile
+airstack --provider-profile fly:work status --source provider
+
+# Compare status across all Fly profiles
+airstack provider profile status fly --detailed
+```
 
 ### Fozzy Gate
 

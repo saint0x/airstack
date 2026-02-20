@@ -10,6 +10,7 @@ mod deploy_runtime;
 mod env_loader;
 mod infra_preflight;
 mod output;
+mod provider_profiles;
 mod retry;
 mod secrets_store;
 mod ssh_utils;
@@ -64,6 +65,13 @@ pub struct Cli {
         help = "Allow local deploys even when infra servers exist"
     )]
     allow_local_deploy: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Provider profile override for this run (<provider>:<profile>)"
+    )]
+    provider_profile: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -235,6 +243,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::backup::BackupCommands,
     },
+    #[command(about = "Provider profile and multi-context workflows")]
+    Provider {
+        #[command(subcommand)]
+        command: commands::provider::ProviderCommands,
+    },
     #[command(about = "Build/publish release image for a service")]
     Release(commands::release::ReleaseArgs),
     #[command(about = "Atomic latest-code ship (build/push/deploy with rollback)")]
@@ -251,6 +264,7 @@ async fn main() -> Result<()> {
     if let Some(env_name) = &cli.env {
         std::env::set_var("AIRSTACK_ENV", env_name);
     }
+    provider_profiles::apply_profiles_for_run(cli.provider_profile.as_deref())?;
     output::configure(cli.json, cli.quiet);
 
     let level = if cli.verbose {
@@ -386,6 +400,7 @@ async fn main() -> Result<()> {
         Commands::Runbook => commands::runbook::run(&config_path).await,
         Commands::Secrets { command } => commands::secrets::run(&config_path, command).await,
         Commands::Backup { command } => commands::backup::run(&config_path, command).await,
+        Commands::Provider { command } => commands::provider::run(&config_path, command).await,
         Commands::Release(args) => commands::release::run(&config_path, args).await,
         Commands::Ship(mut args) => {
             args.allow_local_deploy = cli.allow_local_deploy;

@@ -45,6 +45,7 @@ Production Expansion Status (current)
 - ✅ Runtime ABI guard now checks command availability only (post-deploy probes remain service health source of truth)
 - ✅ Remote volume preflight guard for missing/relative bind mount sources
 - ✅ Provider-native Hetzner firewall config primitive in TOML (`infra.firewall`)
+- ✅ First-class provider profiles (generic per-provider/custom env contexts, plus Fly multi-profile workflows)
 
 Implementation Audit (as of February 19, 2026)
 
