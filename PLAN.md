@@ -39,6 +39,7 @@ Production Expansion Status (current)
 - ✅ Registry doctor now classifies failures (`auth_denied` / `tag_missing` / `network`) + remediation hints
 - ✅ Edge diagnose includes DNS TTL + nameserver visibility context
 - ✅ Full go-live readiness command (`go-live`)
+- ✅ First-class remote script runner + lifecycle hooks (`script list|plan|run`, `hooks.pre_provision|post_provision|post_deploy`)
 
 Implementation Audit (as of February 19, 2026)
 

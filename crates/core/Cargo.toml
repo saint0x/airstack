@@ -29,6 +29,7 @@ dotenvy.workspace = true
 dialoguer.workspace = true
 base64.workspace = true
 chacha20poly1305.workspace = true
+sha2.workspace = true
 
 airstack-config = { path = "../config" }
 airstack-metal = { path = "../metal" }

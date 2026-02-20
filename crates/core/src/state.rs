@@ -10,6 +10,8 @@ pub struct LocalState {
     pub updated_at_unix: u64,
     pub servers: BTreeMap<String, ServerState>,
     pub services: BTreeMap<String, ServiceState>,
+    #[serde(default)]
+    pub script_runs: BTreeMap<String, ScriptRunState>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -68,6 +70,12 @@ pub struct DriftReport {
     pub extra_servers_in_cache: Vec<String>,
     pub missing_services_in_cache: Vec<String>,
     pub extra_services_in_cache: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScriptRunState {
+    pub last_hash: Option<String>,
+    pub last_run_unix: u64,
 }
 
 impl LocalState {

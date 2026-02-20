@@ -9,6 +9,8 @@ pub struct AirstackConfig {
     pub infra: Option<InfraConfig>,
     pub services: Option<HashMap<String, ServiceConfig>>,
     pub edge: Option<EdgeConfig>,
+    pub scripts: Option<HashMap<String, ScriptConfig>>,
+    pub hooks: Option<HooksConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +90,31 @@ pub struct EdgeSiteConfig {
     pub upstream_port: u16,
     pub tls_email: Option<String>,
     pub redirect_http: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptConfig {
+    pub target: String,
+    pub file: String,
+    pub shell: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+    pub idempotency: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub retry: Option<ScriptRetryConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptRetryConfig {
+    pub max_attempts: Option<usize>,
+    pub transient_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HooksConfig {
+    pub pre_provision: Option<Vec<String>>,
+    pub post_provision: Option<Vec<String>>,
+    pub post_deploy: Option<Vec<String>>,
 }
 
 impl AirstackConfig {
@@ -190,6 +217,55 @@ impl AirstackConfig {
             }
         }
 
+        if let Some(scripts) = &self.scripts {
+            for (name, script) in scripts {
+                if name.trim().is_empty() {
+                    anyhow::bail!("Script name cannot be empty");
+                }
+                if script.target.trim().is_empty() {
+                    anyhow::bail!("Script '{}' target cannot be empty", name);
+                }
+                if script.file.trim().is_empty() {
+                    anyhow::bail!("Script '{}' file cannot be empty", name);
+                }
+                if let Some(mode) = &script.idempotency {
+                    if mode != "always" && mode != "once" && mode != "on-change" {
+                        anyhow::bail!(
+                            "Script '{}' idempotency must be one of: always|once|on-change",
+                            name
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Some(hooks) = &self.hooks {
+            if let Some(scripts) = &self.scripts {
+                for (hook, names) in [
+                    ("pre_provision", hooks.pre_provision.as_ref()),
+                    ("post_provision", hooks.post_provision.as_ref()),
+                    ("post_deploy", hooks.post_deploy.as_ref()),
+                ] {
+                    if let Some(names) = names {
+                        for name in names {
+                            if !scripts.contains_key(name) {
+                                anyhow::bail!(
+                                    "Hook '{}' references unknown script '{}'",
+                                    hook,
+                                    name
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if hooks.pre_provision.is_some()
+                || hooks.post_provision.is_some()
+                || hooks.post_deploy.is_some()
+            {
+                anyhow::bail!("Hooks configured but no [scripts] defined");
+            }
+        }
+
         Ok(())
     }
 
@@ -235,6 +311,17 @@ impl AirstackConfig {
 
         if let Some(edge) = overlay.edge {
             self.edge = Some(edge);
+        }
+
+        if let Some(scripts) = overlay.scripts {
+            let base_scripts = self.scripts.get_or_insert_with(HashMap::new);
+            for (name, script) in scripts {
+                base_scripts.insert(name, script);
+            }
+        }
+
+        if let Some(hooks) = overlay.hooks {
+            self.hooks = Some(hooks);
         }
     }
 
@@ -299,6 +386,8 @@ struct OverlayConfig {
     infra: Option<InfraConfig>,
     services: Option<HashMap<String, ServiceConfig>>,
     edge: Option<EdgeConfig>,
+    scripts: Option<HashMap<String, ScriptConfig>>,
+    hooks: Option<HooksConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -353,6 +442,8 @@ mod tests {
                 },
             )])),
             edge: None,
+            scripts: None,
+            hooks: None,
         }
     }
 
@@ -454,5 +545,66 @@ ssh_key = "~/.ssh/id_ed25519.pub"
             "unexpected error: {msg}"
         );
         fs::remove_file(&path).expect("cleanup should succeed");
+    }
+
+    #[test]
+    fn validate_rejects_unknown_hook_script_reference() {
+        let mut cfg = base_config();
+        cfg.scripts = Some(HashMap::from([(
+            "bootstrap".to_string(),
+            ScriptConfig {
+                target: "all".to_string(),
+                file: "scripts/bootstrap.sh".to_string(),
+                shell: None,
+                args: None,
+                env: None,
+                idempotency: Some("always".to_string()),
+                timeout_secs: None,
+                retry: None,
+            },
+        )]));
+        cfg.hooks = Some(HooksConfig {
+            pre_provision: Some(vec!["missing".to_string()]),
+            post_provision: None,
+            post_deploy: None,
+        });
+
+        let err = cfg.validate().expect_err("unknown hook script should fail");
+        assert!(
+            err.to_string()
+                .contains("Hook 'pre_provision' references unknown script 'missing'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_scripts_and_hooks() {
+        let mut cfg = base_config();
+        cfg.scripts = Some(HashMap::from([(
+            "bootstrap".to_string(),
+            ScriptConfig {
+                target: "all".to_string(),
+                file: "scripts/bootstrap.sh".to_string(),
+                shell: Some("bash".to_string()),
+                args: Some(vec!["--fast".to_string()]),
+                env: Some(HashMap::from([(
+                    "AIRSTACK_STAGE".to_string(),
+                    "prod".to_string(),
+                )])),
+                idempotency: Some("on-change".to_string()),
+                timeout_secs: Some(120),
+                retry: Some(ScriptRetryConfig {
+                    max_attempts: Some(2),
+                    transient_only: Some(true),
+                }),
+            },
+        )]));
+        cfg.hooks = Some(HooksConfig {
+            pre_provision: Some(vec!["bootstrap".to_string()]),
+            post_provision: None,
+            post_deploy: None,
+        });
+
+        cfg.validate().expect("valid scripts/hooks should pass");
     }
 }

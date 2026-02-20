@@ -150,6 +150,11 @@ enum Commands {
         )]
         view: Option<String>,
     },
+    #[command(about = "Run configured remote scripts and lifecycle hooks")]
+    Script {
+        #[command(subcommand)]
+        command: commands::script::ScriptCommands,
+    },
     #[command(about = "Show status of infrastructure and services")]
     Status {
         #[arg(long, help = "Show detailed status")]
@@ -327,6 +332,7 @@ async fn main() -> Result<()> {
         }
         Commands::Cli => commands::cli::run(&config_path).await,
         Commands::Tui { view } => commands::tui::run(&config_path, view).await,
+        Commands::Script { command } => commands::script::run(&config_path, command).await,
         Commands::Status {
             detailed,
             probe,

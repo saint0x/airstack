@@ -7,6 +7,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::commands::edge;
+use crate::commands::script::{run_hook_scripts, ScriptRunOptions};
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
     deploy_service, evaluate_service_health, existing_service_image, resolve_target,
@@ -70,6 +71,21 @@ pub async fn run(
     let mut service_records = Vec::new();
 
     if let Some(infra) = &config.infra {
+        if let Some(hooks) = &config.hooks {
+            if let Some(pre_provision) = &hooks.pre_provision {
+                output::line("🔧 running pre_provision hooks");
+                run_hook_scripts(
+                    config_path,
+                    pre_provision,
+                    ScriptRunOptions {
+                        dry_run,
+                        explain: false,
+                    },
+                )
+                .await
+                .context("pre_provision hook execution failed")?;
+            }
+        }
         for server in &infra.servers {
             info!("Planning server: {} ({})", server.name, server.server_type);
             check_ssh_key_path(server)?;
@@ -201,6 +217,22 @@ pub async fn run(
                 }
             }
         }
+
+        if let Some(hooks) = &config.hooks {
+            if let Some(post_provision) = &hooks.post_provision {
+                output::line("🔧 running post_provision hooks");
+                run_hook_scripts(
+                    config_path,
+                    post_provision,
+                    ScriptRunOptions {
+                        dry_run,
+                        explain: false,
+                    },
+                )
+                .await
+                .context("post_provision hook execution failed")?;
+            }
+        }
     }
 
     if let Some(services) = &config.services {
@@ -291,6 +323,22 @@ pub async fn run(
                     .await
                     .with_context(|| "Failed to sync edge config during caddy deploy")?;
                 output::line("✅ edge config reconciled during caddy deploy");
+            }
+        }
+
+        if let Some(hooks) = &config.hooks {
+            if let Some(post_deploy) = &hooks.post_deploy {
+                output::line("🔧 running post_deploy hooks");
+                run_hook_scripts(
+                    config_path,
+                    post_deploy,
+                    ScriptRunOptions {
+                        dry_run,
+                        explain: false,
+                    },
+                )
+                .await
+                .context("post_deploy hook execution failed")?;
             }
         }
     }

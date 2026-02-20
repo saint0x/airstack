@@ -16,6 +16,7 @@ pub mod registry;
 pub mod release;
 pub mod runbook;
 pub mod scale;
+pub mod script;
 pub mod secrets;
 pub mod ship;
 pub mod ssh;

@@ -98,6 +98,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
+| `airstack script <list|plan|run>` | Run remote lifecycle scripts defined in config |
 | `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode |
 | `airstack ssh &lt;server&gt;` | SSH into a server |
 | `airstack logs &lt;service&gt;` | Show service logs |
@@ -257,6 +258,22 @@ upstream_service = "frontend"
 upstream_port = 80
 tls_email = "ops@example.com"
 redirect_http = true
+
+[scripts.bootstrap]
+target = "all"
+file = "scripts/bootstrap.sh"
+idempotency = "once"
+timeout_secs = 300
+
+[scripts.migrate]
+target = "server:web-1"
+file = "scripts/migrate.sh"
+idempotency = "on-change"
+retry = { max_attempts = 2, transient_only = true }
+
+[hooks]
+pre_provision = ["bootstrap"]
+post_deploy = ["migrate"]
 ```
 
 ## Development
