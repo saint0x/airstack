@@ -31,6 +31,17 @@ pub async fn run(
     let mut actions = Vec::new();
 
     if let Some(infra) = &config.infra {
+        if let Some(firewall) = &infra.firewall {
+            actions.push(PlanAction {
+                resource_type: "firewall".to_string(),
+                resource: firewall.name.clone(),
+                action: "ensure".to_string(),
+                reason: format!(
+                    "provider-native ingress rules: {} rule(s)",
+                    firewall.ingress.len()
+                ),
+            });
+        }
         let mut by_provider: HashMap<String, Vec<String>> = HashMap::new();
         for server in &infra.servers {
             by_provider
@@ -111,6 +122,17 @@ pub async fn run(
                 action: "deploy".to_string(),
                 reason: format!("ensure image {} is active", svc.image),
             });
+            if let Some(vols) = &svc.volumes {
+                for volume in vols {
+                    actions.push(PlanAction {
+                        resource_type: "volume".to_string(),
+                        resource: format!("{}:{}", name, volume),
+                        action: "validate".to_string(),
+                        reason: "verify remote bind mount source exists or use docker named volume"
+                            .to_string(),
+                    });
+                }
+            }
         }
     }
 

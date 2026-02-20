@@ -83,6 +83,16 @@ enum Commands {
         target: Option<String>,
         #[arg(long, help = "Infrastructure provider")]
         provider: Option<String>,
+        #[arg(
+            long,
+            help = "Deploy services locally and skip infrastructure provisioning"
+        )]
+        local: bool,
+        #[arg(
+            long,
+            help = "Bootstrap runtime dependencies (Docker) on remote servers"
+        )]
+        bootstrap_runtime: bool,
         #[arg(long, help = "Allow provider-aware fallback to default valid region")]
         auto_fallback: bool,
         #[arg(long, help = "Resolve server region/type capacity automatically")]
@@ -283,6 +293,8 @@ async fn main() -> Result<()> {
         Commands::Up {
             target,
             provider,
+            local,
+            bootstrap_runtime,
             auto_fallback,
             resolve_capacity,
         } => {
@@ -292,6 +304,8 @@ async fn main() -> Result<()> {
                 provider,
                 cli.dry_run,
                 cli.allow_local_deploy,
+                local,
+                bootstrap_runtime,
                 auto_fallback,
                 resolve_capacity,
             )

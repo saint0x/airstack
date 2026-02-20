@@ -60,8 +60,18 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
                 let provider = read_optional(theme, "Provider (blank = config default)")?;
                 let target = read_optional(theme, "Target env (blank = default)")?;
                 run_and_continue(
-                    commands::up::run(config_path, target, provider, false, false, false, false)
-                        .await,
+                    commands::up::run(
+                        config_path,
+                        target,
+                        provider,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false,
+                    )
+                    .await,
                 );
             }
             3 => {

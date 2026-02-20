@@ -1,7 +1,7 @@
 use crate::commands::edge;
 use crate::deploy_runtime::{
-    deploy_service_with_strategy, evaluate_service_health, existing_service_image, resolve_target,
-    rollback_service, DeployStrategy,
+    collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
+    existing_service_image, resolve_target, rollback_service, DeployStrategy,
 };
 use crate::output;
 use airstack_config::AirstackConfig;
@@ -110,6 +110,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
                 })
         {
             deployed.healthy = Some(false);
+            let diag = collect_container_diagnostics(&target, &args.service).await;
             if let Some(prev) = &previous_image {
                 let _ = rollback_service(&target, &args.service, prev, service_cfg).await;
                 rolled_back = true;
@@ -120,8 +121,8 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
             }
             return Err(err).with_context(|| {
                 format!(
-                    "Ship healthcheck failed for '{}' (rollback attempted={})",
-                    args.service, rolled_back
+                    "Ship healthcheck failed for '{}' (rollback attempted={}). diagnostics: {}",
+                    args.service, rolled_back, diag
                 )
             });
         }

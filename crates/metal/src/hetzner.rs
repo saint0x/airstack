@@ -1,6 +1,6 @@
 use crate::{
-    CapacityResolveOptions, CreateRequestValidation, CreateServerRequest, MetalProvider,
-    ProviderCapabilities, Server, ServerStatus,
+    CapacityResolveOptions, CreateRequestValidation, CreateServerRequest, FirewallRuleSpec,
+    FirewallSpec, MetalProvider, ProviderCapabilities, Server, ServerStatus,
 };
 use anyhow::{Context, Result};
 use reqwest::Client;
@@ -73,6 +73,17 @@ struct HetznerSshKey {
 #[derive(Debug, Serialize, Deserialize)]
 struct HetznerSshKeysResponse {
     ssh_keys: Option<Vec<HetznerSshKey>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HetznerFirewall {
+    id: u64,
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HetznerFirewallsResponse {
+    firewalls: Option<Vec<HetznerFirewall>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +187,42 @@ impl HetznerProvider {
         Ok(found.map(|k| k.id.to_string()))
     }
 
+    async fn resolve_server_location(&self, server_id: &str) -> Result<Option<String>> {
+        let response = self
+            .client
+            .get(format!("{}/servers/{}", self.base_url, server_id))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await
+            .context("Failed to send get server request for floating IP location")?;
+
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+
+        let result: HetznerResponse<HetznerServer> = response
+            .json()
+            .await
+            .context("Failed to parse get server response for floating IP location")?;
+        Ok(result.server.map(|s| s.datacenter.location.name))
+    }
+
+    fn floating_ip_create_payload(
+        &self,
+        server_id: u64,
+        home_location: Option<&str>,
+    ) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "type": "ipv4",
+            "server": server_id,
+            "description": format!("airstack-fip-{server_id}")
+        });
+        if let Some(location) = home_location {
+            payload["home_location"] = serde_json::Value::String(location.to_string());
+        }
+        payload
+    }
+
     async fn fetch_type_region_matrix(
         &self,
     ) -> Result<(
@@ -240,6 +287,42 @@ impl HetznerProvider {
             }
         }
         available.first().cloned()
+    }
+
+    fn map_firewall_rule(rule: &FirewallRuleSpec) -> serde_json::Value {
+        let mut mapped = serde_json::json!({
+            "direction": "in",
+            "protocol": rule.protocol,
+            "source_ips": rule.source_ips,
+        });
+        if let Some(port) = &rule.port {
+            mapped["port"] = serde_json::Value::String(port.clone());
+        }
+        mapped
+    }
+
+    async fn find_firewall_by_name(&self, name: &str) -> Result<Option<String>> {
+        let response = self
+            .client
+            .get(format!("{}/firewalls", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .send()
+            .await
+            .context("Failed to send list firewalls request")?;
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to list firewalls: {}", error_text);
+        }
+        let body: HetznerFirewallsResponse = response
+            .json()
+            .await
+            .context("Failed to parse list firewalls response")?;
+        Ok(body
+            .firewalls
+            .unwrap_or_default()
+            .into_iter()
+            .find(|f| f.name == name)
+            .map(|f| f.id.to_string()))
     }
 }
 
@@ -561,10 +644,11 @@ impl MetalProvider for HetznerProvider {
             server_id
         );
 
-        let payload = serde_json::json!({
-            "type": "assign",
-            "assignee": server_id
-        });
+        let parsed_server_id = server_id
+            .parse::<u64>()
+            .with_context(|| format!("invalid server id '{}' for floating IP attach", server_id))?;
+        let home_location = self.resolve_server_location(server_id).await?;
+        let payload = self.floating_ip_create_payload(parsed_server_id, home_location.as_deref());
 
         let response = self
             .client
@@ -592,5 +676,89 @@ impl MetalProvider for HetznerProvider {
 
         info!("Successfully attached floating IP: {}", floating_ip);
         Ok(floating_ip)
+    }
+
+    async fn ensure_firewall(&self, spec: &FirewallSpec) -> Result<Option<String>> {
+        if let Some(existing) = self.find_firewall_by_name(&spec.name).await? {
+            return Ok(Some(existing));
+        }
+
+        let rules = spec
+            .rules
+            .iter()
+            .map(Self::map_firewall_rule)
+            .collect::<Vec<_>>();
+        let payload = serde_json::json!({
+            "name": spec.name,
+            "rules": rules
+        });
+        let response = self
+            .client
+            .post(format!("{}/firewalls", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to create firewall")?;
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to create firewall: {}", error_text);
+        }
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse firewall creation response")?;
+        let id = body["firewall"]["id"]
+            .as_u64()
+            .context("No firewall id in response")?;
+        Ok(Some(id.to_string()))
+    }
+
+    async fn attach_firewall_to_server(&self, firewall_id: &str, server_id: &str) -> Result<()> {
+        let server_id = server_id
+            .parse::<u64>()
+            .with_context(|| format!("invalid server id '{}' for firewall attach", server_id))?;
+        let payload = serde_json::json!({
+            "apply_to": [{
+                "type": "server",
+                "server": { "id": server_id }
+            }]
+        });
+        let response = self
+            .client
+            .post(format!(
+                "{}/firewalls/{}/actions/apply_to_resources",
+                self.base_url, firewall_id
+            ))
+            .header("Authorization", format!("Bearer {}", self.api_token))
+            .json(&payload)
+            .send()
+            .await
+            .context("Failed to apply firewall to server")?;
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to attach firewall to server: {}", error_text);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HetznerProvider;
+    use std::collections::HashMap;
+
+    #[test]
+    fn floating_ip_payload_uses_valid_type_and_server() {
+        let provider = HetznerProvider::new(HashMap::from([(
+            "api_token".to_string(),
+            "test-token".to_string(),
+        )]))
+        .expect("provider should initialize");
+
+        let payload = provider.floating_ip_create_payload(12345, Some("hel1"));
+        assert_eq!(payload["type"], "ipv4");
+        assert_eq!(payload["server"], 12345);
+        assert_eq!(payload["home_location"], "hel1");
     }
 }

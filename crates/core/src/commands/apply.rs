@@ -11,6 +11,8 @@ pub async fn run(config_path: &str, allow_local_deploy: bool) -> Result<()> {
         allow_local_deploy,
         false,
         false,
+        false,
+        false,
     )
     .await
 }

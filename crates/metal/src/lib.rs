@@ -35,6 +35,19 @@ pub struct CreateServerRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallSpec {
+    pub name: String,
+    pub rules: Vec<FirewallRuleSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallRuleSpec {
+    pub protocol: String,
+    pub port: Option<String>,
+    pub source_ips: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
     pub supports_public_ip: bool,
     pub supports_direct_ssh: bool,
@@ -69,6 +82,12 @@ pub trait MetalProvider: Send + Sync {
     async fn list_servers(&self) -> Result<Vec<Server>>;
     async fn upload_ssh_key(&self, name: &str, public_key_path: &str) -> Result<String>;
     async fn attach_floating_ip(&self, server_id: &str) -> Result<String>;
+    async fn ensure_firewall(&self, _spec: &FirewallSpec) -> Result<Option<String>> {
+        Ok(None)
+    }
+    async fn attach_firewall_to_server(&self, _firewall_id: &str, _server_id: &str) -> Result<()> {
+        Ok(())
+    }
     async fn validate_create_request(
         &self,
         _request: &CreateServerRequest,

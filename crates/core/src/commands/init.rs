@@ -60,9 +60,12 @@ pub async fn run(
 [services.clickhouse]
 image = "clickhouse/clickhouse-server:24.8"
 ports = [8123, 9000]
-env = { CLICKHOUSE_DB = "analytics" }
-volumes = ["./data/clickhouse:/var/lib/clickhouse"]
-healthcheck = { command = ["clickhouse-client", "--query", "SELECT 1"], interval_secs = 10, retries = 12, timeout_secs = 5 }
+env = { CLICKHOUSE_DB = "analytics", CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT = "1" }
+volumes = ["/opt/airstack/clickhouse/data:/var/lib/clickhouse"]
+healthcheck = { http = { path = "/ping", port = 8123, expected_status = 200 }, interval_secs = 5, retries = 20, timeout_secs = 3 }
+# Optional: ensure public interfaces are enabled in your remote config:
+# /opt/airstack/clickhouse/config/config.d/network.xml with
+#   <clickhouse><listen_host>0.0.0.0</listen_host></clickhouse>
 "#,
         );
     }

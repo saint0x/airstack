@@ -1,8 +1,8 @@
 use crate::commands::edge;
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
-    deploy_service_with_strategy, evaluate_service_health, existing_service_image, resolve_target,
-    rollback_service, DeployStrategy,
+    collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
+    existing_service_image, resolve_target, rollback_service, DeployStrategy,
 };
 use crate::output;
 use crate::state::{HealthState, LocalState, ServiceState};
@@ -125,6 +125,7 @@ pub async fn run(
                     })
             {
                 container.healthy = Some(false);
+                let diag = collect_container_diagnostics(&runtime_target, deploy_name).await;
                 if let Some(prev) = &previous_image {
                     let _ = rollback_service(&runtime_target, deploy_name, prev, service).await;
                     output::line(format!(
@@ -134,8 +135,8 @@ pub async fn run(
                 }
                 return Err(err).with_context(|| {
                     format!(
-                        "Healthcheck gate failed for service '{}' (rolled back if possible)",
-                        deploy_name
+                        "Healthcheck gate failed for service '{}' (rolled back if possible). diagnostics: {}",
+                        deploy_name, diag
                     )
                 });
             }

@@ -498,6 +498,7 @@ mod tests {
                         floating_ip: Some(false),
                     },
                 ],
+                firewall: None,
             }),
             services: None,
             edge: None,

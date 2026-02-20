@@ -81,7 +81,7 @@ pub fn resolve_target(
         "local" => {
             if infra_present && !allow_local_deploy {
                 anyhow::bail!(
-                    "Unsafe local deploy blocked: infra servers exist. Use remote deploy mode or pass --allow-local-deploy"
+                    "Unsafe local deploy blocked: infra servers exist. Use remote deploy mode, pass --allow-local-deploy, or run `airstack up --local` for explicit local verification mode."
                 );
             }
             Ok(RuntimeTarget::Local)
@@ -142,6 +142,7 @@ pub async fn deploy_service(
 ) -> Result<RuntimeDeployResult> {
     preflight_image_access(target, &service.image).await?;
     preflight_runtime_abi(target, name, service).await?;
+    validate_remote_volumes(target, name, service).await?;
 
     let mut run_parts = vec![
         "docker".to_string(),
@@ -218,15 +219,17 @@ pub async fn preflight_runtime_abi(
         return Ok(());
     }
 
-    let mut probe_parts = vec![
+    let executable = hc.command[0].clone();
+    let probe_parts = vec![
         "docker".to_string(),
         "run".to_string(),
         "--rm".to_string(),
         "--entrypoint".to_string(),
-        hc.command[0].clone(),
+        "sh".to_string(),
         service.image.clone(),
+        "-lc".to_string(),
+        format!("command -v {} >/dev/null 2>&1", shell_quote(&executable)),
     ];
-    probe_parts.extend(hc.command.iter().skip(1).cloned());
 
     let probe_script = join_shell_command(&probe_parts);
     let out = run_shell(target, &probe_script).await?;
@@ -246,17 +249,17 @@ pub async fn preflight_runtime_abi(
         || lower.contains("not found")
     {
         anyhow::bail!(
-            "Runtime ABI guard for '{}': probe command '{}' failed before deploy ({}) . This often indicates libc/ABI mismatch (musl vs glibc) or wrong target architecture.",
+            "Runtime ABI guard for '{}': healthcheck executable '{}' is unavailable in image before deploy ({}) . This often indicates libc/ABI mismatch (musl vs glibc), wrong target architecture, or missing binary in image.",
             service_name,
-            hc.command.join(" "),
+            executable,
             reason
         );
     }
 
     anyhow::bail!(
-        "Runtime ABI guard for '{}': probe command '{}' failed before deploy ({})",
+        "Runtime ABI guard for '{}': healthcheck executable '{}' failed pre-deploy availability check ({})",
         service_name,
-        hc.command.join(" "),
+        executable,
         reason
     );
 }
@@ -605,6 +608,14 @@ fn to_probe_record(profile_name: &str, command: String, out: Output) -> HealthPr
 }
 
 pub async fn preflight_image_access(target: &RuntimeTarget, image: &str) -> Result<()> {
+    let docker_check = run_shell(target, "command -v docker >/dev/null 2>&1").await?;
+    if !docker_check.status.success() {
+        anyhow::bail!(
+            "Image preflight failed for '{}': docker runtime not found on target host. Use `airstack up --bootstrap-runtime` or run `airstack ssh <server> -- 'apt-get update && apt-get install -y docker.io && systemctl enable --now docker'`.",
+            image
+        );
+    }
+
     let script = format!(
         "docker image inspect {img} >/dev/null 2>&1 || docker pull {img}",
         img = shell_quote(image)
@@ -627,6 +638,132 @@ pub async fn preflight_image_access(target: &RuntimeTarget, image: &str) -> Resu
         stderr,
         hint
     );
+}
+
+async fn validate_remote_volumes(
+    target: &RuntimeTarget,
+    service_name: &str,
+    service: &ServiceConfig,
+) -> Result<()> {
+    let RuntimeTarget::Remote(_) = target else {
+        return Ok(());
+    };
+    let Some(volumes) = &service.volumes else {
+        return Ok(());
+    };
+
+    let mut missing_paths = Vec::new();
+    for volume in volumes {
+        let Some((source, _dest)) = parse_volume_mapping(volume) else {
+            continue;
+        };
+        let is_bind_like = source.starts_with('/')
+            || source.starts_with("./")
+            || source.starts_with("../")
+            || source.starts_with("~/")
+            || source.contains('/');
+        if !is_bind_like {
+            continue;
+        }
+        if !source.starts_with('/') {
+            anyhow::bail!(
+                "Remote volume mapping '{}' for service '{}' uses a local/relative source path '{}'. Airstack does not auto-sync local files to remote hosts. Use absolute remote paths or bootstrap/scripts to copy files first.",
+                volume,
+                service_name,
+                source
+            );
+        }
+        let check = run_shell(target, &format!("test -e {}", shell_quote(source))).await?;
+        if !check.status.success() {
+            missing_paths.push(source.to_string());
+        }
+    }
+
+    if !missing_paths.is_empty() {
+        anyhow::bail!(
+            "Remote volume preflight failed for service '{}': missing remote source path(s): {}",
+            service_name,
+            missing_paths.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn parse_volume_mapping(mapping: &str) -> Option<(&str, &str)> {
+    let mut parts = mapping.splitn(3, ':');
+    let source = parts.next()?.trim();
+    let dest = parts.next()?.trim();
+    if source.is_empty() || dest.is_empty() {
+        return None;
+    }
+    Some((source, dest))
+}
+
+pub async fn collect_container_diagnostics(target: &RuntimeTarget, name: &str) -> String {
+    let inspect = run_shell(
+        target,
+        &format!(
+            "docker inspect -f '{{{{.State.Status}}}}|{{{{.State.ExitCode}}}}|{{{{.State.Error}}}}|{{{{.RestartCount}}}}' {} 2>/dev/null || true",
+            shell_quote(name)
+        ),
+    )
+    .await
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    .unwrap_or_default();
+
+    let logs = run_shell(
+        target,
+        &format!("docker logs --tail 40 {} 2>&1 || true", shell_quote(name)),
+    )
+    .await
+    .ok()
+    .map(|o| limit_output(String::from_utf8_lossy(&o.stdout).trim()))
+    .unwrap_or_else(|| "unavailable".to_string());
+
+    let mounts = run_shell(
+        target,
+        &format!(
+            "docker inspect -f '{{{{range .Mounts}}}}{{{{.Source}}}}:{{{{.Destination}}}} {{end}}' {} 2>/dev/null || true",
+            shell_quote(name)
+        ),
+    )
+    .await
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    .unwrap_or_default();
+
+    let env_keys = run_shell(
+        target,
+        &format!(
+            "docker inspect -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {} 2>/dev/null | cut -d= -f1 | sort -u | tr '\\n' ',' | sed 's/,$//' || true",
+            shell_quote(name)
+        ),
+    )
+    .await
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    .unwrap_or_default();
+
+    format!(
+        "state={} mounts={} env_keys={} logs_tail={}",
+        if inspect.is_empty() {
+            "unknown".to_string()
+        } else {
+            inspect
+        },
+        if mounts.is_empty() {
+            "none".to_string()
+        } else {
+            mounts
+        },
+        if env_keys.is_empty() {
+            "none".to_string()
+        } else {
+            env_keys
+        },
+        logs
+    )
 }
 
 async fn inspect_service(

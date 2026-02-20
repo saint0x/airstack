@@ -40,6 +40,11 @@ Production Expansion Status (current)
 - ✅ Edge diagnose includes DNS TTL + nameserver visibility context
 - ✅ Full go-live readiness command (`go-live`)
 - ✅ First-class remote script runner + lifecycle hooks (`script list|plan|run`, `hooks.pre_provision|post_provision|post_deploy`)
+- ✅ `up --bootstrap-runtime` Docker bootstrap for first-time remote hosts
+- ✅ `up --local` explicit local verification mode
+- ✅ Runtime ABI guard now checks command availability only (post-deploy probes remain service health source of truth)
+- ✅ Remote volume preflight guard for missing/relative bind mount sources
+- ✅ Provider-native Hetzner firewall config primitive in TOML (`infra.firewall`)
 
 Implementation Audit (as of February 19, 2026)
 

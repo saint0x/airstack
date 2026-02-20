@@ -23,6 +23,7 @@ pub struct ProjectConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfraConfig {
     pub servers: Vec<ServerConfig>,
+    pub firewall: Option<FirewallConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +47,19 @@ pub struct ServiceConfig {
     pub target_server: Option<String>,
     pub healthcheck: Option<HealthcheckConfig>,
     pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallConfig {
+    pub name: String,
+    pub ingress: Vec<FirewallRuleConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallRuleConfig {
+    pub protocol: String,
+    pub port: Option<String>,
+    pub source_ips: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +180,32 @@ impl AirstackConfig {
         }
 
         if let Some(infra) = &self.infra {
+            if let Some(fw) = &infra.firewall {
+                if fw.name.trim().is_empty() {
+                    anyhow::bail!("infra.firewall.name cannot be empty");
+                }
+                if fw.ingress.is_empty() {
+                    anyhow::bail!("infra.firewall.ingress must contain at least one rule");
+                }
+                for rule in &fw.ingress {
+                    if !matches!(rule.protocol.as_str(), "tcp" | "udp" | "icmp") {
+                        anyhow::bail!(
+                            "infra.firewall ingress protocol must be one of tcp|udp|icmp"
+                        );
+                    }
+                    if rule.source_ips.is_empty() {
+                        anyhow::bail!("infra.firewall rule source_ips cannot be empty");
+                    }
+                    if rule.protocol != "icmp"
+                        && rule.port.as_ref().is_none_or(|p| p.trim().is_empty())
+                    {
+                        anyhow::bail!(
+                            "infra.firewall rule for protocol '{}' requires non-empty port",
+                            rule.protocol
+                        );
+                    }
+                }
+            }
             for server in &infra.servers {
                 if server.name.is_empty() {
                     anyhow::bail!("Server name cannot be empty");
@@ -284,6 +324,9 @@ impl AirstackConfig {
 
         if let Some(infra) = overlay.infra {
             if let Some(base_infra) = &mut self.infra {
+                if infra.firewall.is_some() {
+                    base_infra.firewall = infra.firewall.clone();
+                }
                 for overlay_server in infra.servers {
                     if let Some(existing) = base_infra
                         .servers
@@ -298,6 +341,7 @@ impl AirstackConfig {
             } else {
                 self.infra = Some(InfraConfig {
                     servers: infra.servers,
+                    firewall: infra.firewall,
                 });
             }
         }
@@ -427,6 +471,7 @@ mod tests {
                     ssh_key: "~/.ssh/id_ed25519.pub".to_string(),
                     floating_ip: Some(false),
                 }],
+                firewall: None,
             }),
             services: Some(HashMap::from([(
                 "api".to_string(),
@@ -606,5 +651,29 @@ ssh_key = "~/.ssh/id_ed25519.pub"
         });
 
         cfg.validate().expect("valid scripts/hooks should pass");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_firewall_protocol() {
+        let mut cfg = base_config();
+        cfg.infra = Some(InfraConfig {
+            servers: cfg.infra.as_ref().expect("infra exists").servers.clone(),
+            firewall: Some(FirewallConfig {
+                name: "web".to_string(),
+                ingress: vec![FirewallRuleConfig {
+                    protocol: "http".to_string(),
+                    port: Some("80".to_string()),
+                    source_ips: vec!["0.0.0.0/0".to_string()],
+                }],
+            }),
+        });
+        let err = cfg
+            .validate()
+            .expect_err("invalid firewall protocol should fail");
+        assert!(
+            err.to_string()
+                .contains("protocol must be one of tcp|udp|icmp"),
+            "unexpected error: {err}"
+        );
     }
 }

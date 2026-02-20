@@ -91,7 +91,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | Command | Description |
 |---------|-------------|
 | `airstack init [name] [--provider hetzner|fly] [--preset clickhouse]` | Initialize a project with provider/service presets |
-| `airstack up [--auto-fallback] [--resolve-capacity]` | Provision infrastructure with optional auto capacity resolution |
+| `airstack up [--local] [--bootstrap-runtime] [--auto-fallback] [--resolve-capacity]` | Provision infrastructure (or explicit local mode) with optional runtime bootstrap |
 | `airstack destroy` | Destroy infrastructure |
 | `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (optional latest-code + strategy mode) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
@@ -123,6 +123,8 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 - `--quiet`: suppress human-readable output
 - `--env <name>`: load environment overlay from `airstack.<name>.toml`
 - `--allow-local-deploy`: bypass remote-first deploy guard when infra exists
+- `up --local`: explicit local verification mode (skips infra provisioning)
+- `up --bootstrap-runtime`: install Docker on remote hosts before service deploy
 
 ### Fozzy Gate
 
@@ -223,6 +225,14 @@ region = "fsn1"
 server_type = "cx21"
 ssh_key = "~/.ssh/id_ed25519.pub"
 
+[infra.firewall]
+name = "web-ingress"
+ingress = [
+  { protocol = "tcp", port = "22", source_ips = ["203.0.113.0/24"] },
+  { protocol = "tcp", port = "80", source_ips = ["0.0.0.0/0", "::/0"] },
+  { protocol = "tcp", port = "443", source_ips = ["0.0.0.0/0", "::/0"] }
+]
+
 [[infra.servers]]
 name = "edge-fly"
 provider = "fly"
@@ -275,6 +285,8 @@ retry = { max_attempts = 2, transient_only = true }
 pre_provision = ["bootstrap"]
 post_deploy = ["migrate"]
 ```
+
+Remote deploy note: bind-mount sources for remote services must be absolute paths on the remote host (for example `/opt/airstack/data:/var/lib/postgresql/data`). Relative/local paths are rejected during deploy preflight.
 
 ## Development
 

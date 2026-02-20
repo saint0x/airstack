@@ -8,7 +8,7 @@ use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use crate::deploy_runtime::{evaluate_service_health, resolve_target};
+use crate::deploy_runtime::{evaluate_service_health, preflight_runtime_abi, resolve_target};
 use crate::output;
 use crate::ssh_utils::execute_remote_command;
 use crate::state::{DriftReport, HealthState, LocalState, ServerState, ServiceState};
@@ -395,7 +395,12 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                 find_remote_for_service(service_name, service_config, &remote_containers)
             {
                 let checked_at = unix_now();
-                let health = map_remote_container_health(&remote.status);
+                let mut health = map_remote_container_health(&remote.status);
+                if let Some(probe_text) = &active_probe {
+                    if !probe_indicates_service_ok(probe_text) {
+                        health = HealthState::Degraded;
+                    }
+                }
                 state.services.insert(
                     service_name.clone(),
                     ServiceState {
@@ -454,7 +459,12 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                 match container_provider.get_container(service_name).await {
                     Ok(container) => {
                         let status_text = format!("{:?}", container.status);
-                        let cached_health = map_container_health(container.status.clone());
+                        let mut cached_health = map_container_health(container.status.clone());
+                        if let Some(probe_text) = &active_probe {
+                            if !probe_indicates_service_ok(probe_text) {
+                                cached_health = HealthState::Degraded;
+                            }
+                        }
                         let checked_at = unix_now();
                         let replicas = state
                             .services
@@ -629,10 +639,11 @@ async fn inspect_remote_containers_for_server(
     server_cfg: &ServerConfig,
 ) -> Result<Vec<RemoteContainerRecord>> {
     let scripts = [
-        "docker ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
-        "sudo -n docker ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
-        "podman ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
-        "sudo -n podman ps --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "docker ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "docker container ls -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "sudo -n docker ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "podman ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
+        "sudo -n podman ps -a --format '{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'",
     ];
 
     let mut last_err = String::new();
@@ -663,7 +674,10 @@ fn parse_remote_container_lines(
     let stdout = String::from_utf8_lossy(stdout);
     let mut items = Vec::new();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let parts = line.splitn(5, '\t').collect::<Vec<_>>();
+        let mut parts = line.splitn(5, '\t').collect::<Vec<_>>();
+        if parts.len() < 4 {
+            parts = line.splitn(5, "\\t").collect::<Vec<_>>();
+        }
         if parts.len() < 4 {
             warn!(
                 "Skipping unparsable container line for {}: {}",
@@ -872,21 +886,98 @@ async fn run_active_probe(
     service_name: &str,
     service_cfg: &airstack_config::ServiceConfig,
 ) -> String {
-    match resolve_target(config, service_cfg, false) {
+    match resolve_target(config, service_cfg, true) {
         Ok(target) => {
-            match evaluate_service_health(&target, service_name, service_cfg, false, 1, false).await
-            {
-                Ok(eval) => {
-                    if eval.ok {
-                        "ok".to_string()
-                    } else {
-                        format!("fail: {}", eval.detail)
+            let abi = match preflight_runtime_abi(&target, service_name, service_cfg).await {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("fail({})", e),
+            };
+
+            let mut service_result =
+                match evaluate_service_health(&target, service_name, service_cfg, false, 1, false)
+                    .await
+                {
+                    Ok(eval) => {
+                        if eval.ok {
+                            "configured=ok".to_string()
+                        } else {
+                            format!("configured=fail({})", eval.detail)
+                        }
                     }
-                }
-                Err(e) => format!("error: {}", e),
+                    Err(e) => format!("configured=error({})", e),
+                };
+
+            if should_run_default_network_probe(service_cfg) {
+                let default_probe = default_network_probe(&target, service_name, service_cfg).await;
+                service_result = format!("{service_result}; default={default_probe}");
             }
+            format!("abi={abi}; service={service_result}")
         }
         Err(e) => format!("target-error: {}", e),
+    }
+}
+
+fn should_run_default_network_probe(service_cfg: &airstack_config::ServiceConfig) -> bool {
+    if service_cfg.ports.is_empty() {
+        return false;
+    }
+    let Some(hc) = &service_cfg.healthcheck else {
+        return true;
+    };
+    let has_network = hc.http.is_some()
+        || hc.tcp.is_some()
+        || hc.all.as_ref().is_some_and(|v| !v.is_empty())
+        || hc.any.as_ref().is_some_and(|v| !v.is_empty());
+    !has_network
+}
+
+async fn default_network_probe(
+    target: &crate::deploy_runtime::RuntimeTarget,
+    service_name: &str,
+    service_cfg: &airstack_config::ServiceConfig,
+) -> String {
+    let mut http_probe = service_cfg.clone();
+    let port = service_cfg.ports[0];
+    http_probe.healthcheck = Some(airstack_config::HealthcheckConfig {
+        command: Vec::new(),
+        interval_secs: Some(1),
+        retries: Some(1),
+        timeout_secs: Some(3),
+        http: Some(airstack_config::HttpHealthcheckConfig {
+            url: None,
+            path: Some("/health".to_string()),
+            port: Some(port),
+            expected_status: Some(200),
+            timeout_secs: Some(3),
+        }),
+        tcp: None,
+        any: None,
+        all: None,
+    });
+    match evaluate_service_health(target, service_name, &http_probe, false, 1, false).await {
+        Ok(eval) if eval.ok => "http-ok".to_string(),
+        _ => {
+            let mut tcp_probe = service_cfg.clone();
+            tcp_probe.healthcheck = Some(airstack_config::HealthcheckConfig {
+                command: Vec::new(),
+                interval_secs: Some(1),
+                retries: Some(1),
+                timeout_secs: Some(3),
+                http: None,
+                tcp: Some(airstack_config::TcpHealthcheckConfig {
+                    host: Some("127.0.0.1".to_string()),
+                    port,
+                    timeout_secs: Some(3),
+                }),
+                any: None,
+                all: None,
+            });
+            match evaluate_service_health(target, service_name, &tcp_probe, false, 1, false).await {
+                Ok(eval) if eval.ok => "tcp-ok".to_string(),
+                Ok(eval) => format!("tcp-fail({})", eval.detail),
+                Err(e) => format!("tcp-error({})", e),
+            }
+        }
     }
 }
 
@@ -895,4 +986,8 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn probe_indicates_service_ok(text: &str) -> bool {
+    !text.contains("fail(") && !text.contains("error(") && !text.contains("target-error")
 }
