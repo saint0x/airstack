@@ -76,6 +76,16 @@ pub async fn run(
             run_cmd("docker", &["push", &built_image])?;
         }
         image_overrides.insert(service_name.to_string(), built_image);
+    } else if let Some(tag) = tag {
+        if service_name == "all" {
+            anyhow::bail!("--tag requires an explicit single service, not 'all'");
+        }
+        let svc = services
+            .get(service_name)
+            .with_context(|| format!("Service '{}' not found in configuration", service_name))?;
+        let base_image = svc.image.split(':').next().unwrap_or(&svc.image);
+        let override_image = format!("{}:{}", base_image, tag);
+        image_overrides.insert(service_name.to_string(), override_image);
     }
 
     output::line(format!("🚀 Deploying request: {}", service_name));

@@ -2,7 +2,9 @@ use crate::output;
 use crate::ssh_utils::resolve_server_public_ip;
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
+use base64::Engine;
 use clap::Args;
+use serde_json::json;
 use std::process::Command;
 
 #[derive(Debug, Clone, Args)]
@@ -72,7 +74,21 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
         )
         .and_then(|_| {
             if args.push {
-                run_cmd("docker", &["--context", &ctx, "push", &final_image])
+                let temp_cfg = prepare_docker_auth_config_for_push(&final_image)?;
+                let push = if let Some(cfg_dir) = temp_cfg.as_ref() {
+                    let docker_config = cfg_dir.to_string_lossy().to_string();
+                    run_cmd_with_env(
+                        "docker",
+                        &["--context", &ctx, "push", &final_image],
+                        &[("DOCKER_CONFIG", docker_config.as_str())],
+                    )
+                } else {
+                    run_cmd("docker", &["--context", &ctx, "push", &final_image])
+                };
+                if let Some(cfg_dir) = temp_cfg {
+                    let _ = std::fs::remove_dir_all(cfg_dir);
+                }
+                push
             } else {
                 Ok(())
             }
@@ -141,6 +157,57 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
         anyhow::bail!("Command failed: {} {}", cmd, args.join(" "));
     }
     Ok(())
+}
+
+fn run_cmd_with_env(cmd: &str, args: &[&str], env: &[(&str, &str)]) -> Result<()> {
+    let mut command = Command::new(cmd);
+    command.args(args);
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("Failed to execute {}", cmd))?;
+    if !status.success() {
+        anyhow::bail!("Command failed: {} {}", cmd, args.join(" "));
+    }
+    Ok(())
+}
+
+fn prepare_docker_auth_config_for_push(image: &str) -> Result<Option<std::path::PathBuf>> {
+    let registry = image.split('/').next().unwrap_or_default();
+    if registry != "ghcr.io" {
+        return Ok(None);
+    }
+
+    let token = std::env::var("GHCR_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .context("release --remote-build --push for ghcr.io requires GHCR_TOKEN or GITHUB_TOKEN")?;
+    let username = std::env::var("GHCR_USERNAME")
+        .or_else(|_| std::env::var("GITHUB_ACTOR"))
+        .context(
+            "release --remote-build --push for ghcr.io requires GHCR_USERNAME or GITHUB_ACTOR",
+        )?;
+
+    let dir = std::env::temp_dir().join(format!("airstack-docker-auth-{}", unix_now()));
+    std::fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "Failed to create temporary docker auth dir {}",
+            dir.display()
+        )
+    })?;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{token}"));
+    let config = json!({
+        "auths": {
+            "ghcr.io": {
+                "auth": auth
+            }
+        }
+    });
+    let cfg_path = dir.join("config.json");
+    std::fs::write(&cfg_path, serde_json::to_vec_pretty(&config)?)
+        .with_context(|| format!("Failed to write docker auth config {}", cfg_path.display()))?;
+    Ok(Some(dir))
 }
 
 fn update_config_image(config_path: &str, service: &str, image: &str) -> Result<()> {

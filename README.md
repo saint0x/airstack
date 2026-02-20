@@ -93,7 +93,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack init [name] [--provider hetzner|fly] [--preset clickhouse]` | Initialize a project with provider/service presets |
 | `airstack up [--local] [--bootstrap-runtime] [--auto-fallback] [--resolve-capacity]` | Provision infrastructure (or explicit local mode) with optional runtime bootstrap |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy &lt;service&gt; [--latest-code --push --tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (optional latest-code + strategy mode) |
+| `airstack deploy &lt;service&gt; [--latest-code --push] [--tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (`--tag` overrides image tag for this deploy; `--latest-code` builds locally) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
