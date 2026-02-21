@@ -19,11 +19,17 @@ struct ContainerExecOutput {
     stderr: String,
 }
 
+pub struct ContainerExec {
+    pub command: Vec<String>,
+    pub cmd: Option<String>,
+    pub script: Option<String>,
+}
+
 pub async fn run(
     config_path: &str,
     server: &str,
     container: &str,
-    command: Vec<String>,
+    exec: ContainerExec,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let infra = config
@@ -41,11 +47,18 @@ pub async fn run(
         container, server, server_cfg.provider
     );
 
-    if server_cfg.provider == "fly" {
-        return run_fly_container_exec(server, container, server_cfg, command).await;
+    let command_modes = usize::from(!exec.command.is_empty())
+        + usize::from(exec.cmd.is_some())
+        + usize::from(exec.script.is_some());
+    if command_modes > 1 {
+        anyhow::bail!("Use only one execution mode: --cmd, --script, or -- <argv...>");
     }
 
-    if command.is_empty() {
+    if server_cfg.provider == "fly" {
+        return run_fly_container_exec(server, container, server_cfg, exec).await;
+    }
+
+    if command_modes == 0 {
         if output::is_json() {
             anyhow::bail!(
                 "Interactive container exec cannot be used with --json. Provide a command."
@@ -70,7 +83,26 @@ pub async fn run(
         "exec".to_string(),
         container.to_string(),
     ];
-    remote_cmd.extend(command.iter().cloned());
+    let requested_command = if let Some(cmd) = exec.cmd {
+        remote_cmd.push("sh".to_string());
+        remote_cmd.push("-lc".to_string());
+        remote_cmd.push(cmd.clone());
+        vec!["sh".to_string(), "-lc".to_string(), cmd]
+    } else if let Some(script_path) = exec.script {
+        let script = std::fs::read_to_string(&script_path)
+            .with_context(|| format!("Failed to read script '{}'", script_path))?;
+        remote_cmd.push("sh".to_string());
+        remote_cmd.push("-lc".to_string());
+        remote_cmd.push(script.clone());
+        vec!["sh".to_string(), "-lc".to_string(), script]
+    } else {
+        remote_cmd.extend(exec.command.iter().cloned());
+        exec.command.clone()
+    };
+    if !output::is_json() {
+        output::line(format!("🔧 Executing: {}", join_shell_command(&remote_cmd)));
+    }
+
     let result = execute_remote_command(server_cfg, &remote_cmd).await?;
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
@@ -79,7 +111,7 @@ pub async fn run(
         output::emit_json(&ContainerExecOutput {
             server: server.to_string(),
             container: container.to_string(),
-            command,
+            command: requested_command,
             exit_code: result.status.code().unwrap_or(1),
             stdout,
             stderr,
@@ -110,10 +142,13 @@ async fn run_fly_container_exec(
     server: &str,
     container: &str,
     server_cfg: &airstack_config::ServerConfig,
-    command: Vec<String>,
+    exec: ContainerExec,
 ) -> Result<()> {
     let (app, machine) = resolve_fly_target(server_cfg).await?;
-    if command.is_empty() {
+    let command_modes = usize::from(!exec.command.is_empty())
+        + usize::from(exec.cmd.is_some())
+        + usize::from(exec.script.is_some());
+    if command_modes == 0 {
         if output::is_json() {
             anyhow::bail!(
                 "Interactive container exec cannot be used with --json. Provide a command."
@@ -142,7 +177,19 @@ async fn run_fly_container_exec(
         return Ok(());
     }
 
+    let requested_command = if let Some(cmd) = &exec.cmd {
+        vec!["sh".to_string(), "-lc".to_string(), cmd.clone()]
+    } else if let Some(script_path) = &exec.script {
+        let script = std::fs::read_to_string(script_path)
+            .with_context(|| format!("Failed to read script '{}'", script_path))?;
+        vec!["sh".to_string(), "-lc".to_string(), script]
+    } else {
+        exec.command.clone()
+    };
+    let fly_command = join_shell_command(&requested_command);
+
     let mut fly = Command::new("flyctl");
+
     fly.arg("ssh")
         .arg("console")
         .arg("--app")
@@ -150,7 +197,13 @@ async fn run_fly_container_exec(
         .arg("--container")
         .arg(container)
         .arg("--command")
-        .arg(join_shell_command(&command));
+        .arg(&fly_command);
+    if !output::is_json() {
+        output::line(format!(
+            "🔧 Executing: flyctl ssh console --app {} --container {} --command {}",
+            app, container, fly_command
+        ));
+    }
     if let Some(machine) = machine {
         fly.arg("--machine").arg(machine);
     }
@@ -165,7 +218,7 @@ async fn run_fly_container_exec(
         output::emit_json(&ContainerExecOutput {
             server: server.to_string(),
             container: container.to_string(),
-            command,
+            command: requested_command,
             exit_code: result.status.code().unwrap_or(1),
             stdout,
             stderr,

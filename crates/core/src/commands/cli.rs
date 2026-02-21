@@ -37,7 +37,9 @@ pub async fn run(config_path: &str) -> Result<()> {
             2 => planning_menu(&theme, config_path).await?,
             3 => edge_menu(&theme, config_path).await?,
             4 => remote_menu(&theme, config_path, &server_names, &service_names).await?,
-            5 => run_and_continue(commands::status::run(config_path, false, false, "auto").await),
+            5 => run_and_continue(
+                commands::status::run(config_path, false, false, false, "auto").await,
+            ),
             6 => break,
             _ => {}
         }
@@ -54,8 +56,12 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
             &["Status", "Status (Detailed)", "Up", "Destroy", "Back"],
         )?;
         match choice {
-            0 => run_and_continue(commands::status::run(config_path, false, false, "auto").await),
-            1 => run_and_continue(commands::status::run(config_path, true, false, "auto").await),
+            0 => run_and_continue(
+                commands::status::run(config_path, false, false, false, "auto").await,
+            ),
+            1 => run_and_continue(
+                commands::status::run(config_path, true, false, false, "auto").await,
+            ),
             2 => {
                 let provider = read_optional(theme, "Provider (blank = config default)")?;
                 let target = read_optional(theme, "Target env (blank = default)")?;
@@ -152,7 +158,7 @@ async fn services_menu(
                         .context("Failed to read follow option")?;
                     let tail = read_optional_usize(theme, "Tail lines (blank = full)")?;
                     run_and_continue(
-                        commands::logs::run(config_path, &service, follow, tail).await,
+                        commands::logs::run(config_path, &service, follow, tail, "auto").await,
                     );
                 }
             }
@@ -180,6 +186,7 @@ async fn services_menu(
                                 push,
                                 update_config,
                                 remote_build: None,
+                                from: commands::release::ReleaseFrom::Build,
                             },
                         )
                         .await,
@@ -282,7 +289,16 @@ async fn remote_menu(
                 {
                     let cmd = read_optional(theme, "SSH command (blank = interactive shell)")?;
                     run_and_continue(
-                        commands::ssh::run(config_path, &server, split_command(cmd)).await,
+                        commands::ssh::run(
+                            config_path,
+                            &server,
+                            commands::ssh::SshExec {
+                                command: split_command(cmd),
+                                cmd: None,
+                                script: None,
+                            },
+                        )
+                        .await,
                     );
                 }
             }
@@ -302,8 +318,17 @@ async fn remote_menu(
                     let cmd =
                         read_optional(theme, "Container command (blank = interactive shell)")?;
                     run_and_continue(
-                        commands::cexec::run(config_path, &server, &selected, split_command(cmd))
-                            .await,
+                        commands::cexec::run(
+                            config_path,
+                            &server,
+                            &selected,
+                            commands::cexec::ContainerExec {
+                                command: split_command(cmd),
+                                cmd: None,
+                                script: None,
+                            },
+                        )
+                        .await,
                     );
                 }
             }

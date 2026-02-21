@@ -395,6 +395,9 @@ pub async fn run(
                     last_status: Some(deployed.status),
                     last_checked_unix: unix_now(),
                     last_error: None,
+                    last_deploy_command: Some(format!("airstack up {}", service_name)),
+                    last_deploy_unix: Some(unix_now()),
+                    image_origin: None,
                 },
             );
 

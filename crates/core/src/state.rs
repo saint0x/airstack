@@ -62,6 +62,12 @@ pub struct ServiceState {
     pub last_checked_unix: u64,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub last_deploy_command: Option<String>,
+    #[serde(default)]
+    pub last_deploy_unix: Option<u64>,
+    #[serde(default)]
+    pub image_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

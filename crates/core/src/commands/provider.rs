@@ -300,7 +300,9 @@ async fn status_profiles(config_path: &str, args: ProviderProfileStatusArgs) -> 
 
         output::line("");
         output::line(format!("=== profile {} ===", selector));
-        if let Err(e) = status::run(config_path, args.detailed, args.probe, &args.source).await {
+        if let Err(e) =
+            status::run(config_path, args.detailed, args.probe, false, &args.source).await
+        {
             failures.push(format!("{} -> {}", selector, e));
         }
     }

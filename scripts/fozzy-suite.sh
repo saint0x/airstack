@@ -11,7 +11,7 @@ echo "[fozzy] doctor"
 fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 123 --json
 
 echo "[fozzy] deterministic suite"
-fozzy test --det tests/example.fozzy.json --json
+fozzy test --det --strict tests/example.fozzy.json --json
 
 echo "[fozzy] host-backed cli surface"
 fozzy run tests/fozzy/host_cli_surface.fozzy.json \
@@ -31,7 +31,7 @@ fozzy artifacts ls "$run_id"
 fozzy report show "$run_id" --format pretty
 
 if [[ -f "$trace_out" ]]; then
-  fozzy trace verify "$trace_out" --json
+  fozzy trace verify "$trace_out" --strict --json
   fozzy replay "$trace_out" --json
   fozzy shrink "$trace_out" --minimize all --budget 10s --json
   fozzy ci "$trace_out" --json

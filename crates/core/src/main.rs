@@ -143,13 +143,35 @@ enum Commands {
         canary_seconds: u64,
     },
     #[command(about = "Execute a command inside a container on a remote server")]
+    #[command(
+        after_help = "Example: airstack cexec <server> <container> -- <command>\nExample: airstack cexec <server> --container <container> -- <command>"
+    )]
     Cexec {
         #[arg(help = "Server name")]
         server: String,
         #[arg(help = "Container name")]
-        container: String,
+        container: Option<String>,
+        #[arg(
+            long = "container",
+            help = "Container name (named form to avoid positional ordering mistakes)"
+        )]
+        container_name: Option<String>,
         #[arg(help = "Command to execute in container", last = true)]
         command: Vec<String>,
+        #[arg(long, help = "Execute this shell command string in the container")]
+        cmd: Option<String>,
+        #[arg(long, help = "Run a local script file in the container via shell")]
+        script: Option<String>,
+    },
+    #[command(
+        about = "Legacy build command (deprecated; use release/ship)",
+        hide = true
+    )]
+    Build {
+        #[arg(help = "Legacy mode (for example: remote/local)")]
+        mode: Option<String>,
+        #[arg(help = "Service name")]
+        service: Option<String>,
     },
     #[command(about = "Scale a service to a target replica count")]
     Scale {
@@ -179,6 +201,8 @@ enum Commands {
         detailed: bool,
         #[arg(long, help = "Run active health probes for services")]
         probe: bool,
+        #[arg(long, help = "Include image/deploy provenance fields in status output")]
+        provenance: bool,
         #[arg(
             long,
             help = "Status source-of-truth mode: auto|provider|ssh|control-plane",
@@ -192,6 +216,10 @@ enum Commands {
         target: String,
         #[arg(help = "Command to execute", last = true)]
         command: Vec<String>,
+        #[arg(long, help = "Execute this shell command string on the remote host")]
+        cmd: Option<String>,
+        #[arg(long, help = "Run a local script file on the remote host via shell")]
+        script: Option<String>,
     },
     #[command(about = "Show logs for a service")]
     Logs {
@@ -201,6 +229,12 @@ enum Commands {
         follow: bool,
         #[arg(long, help = "Number of lines to show")]
         tail: Option<usize>,
+        #[arg(
+            long,
+            help = "Logs source-of-truth mode: auto|ssh|control-plane",
+            default_value = "auto"
+        )]
+        source: String,
     },
     #[command(about = "Preview planned infra/service actions")]
     Plan {
@@ -297,6 +331,7 @@ async fn main() -> Result<()> {
             .to_string_lossy()
             .to_string(),
     };
+    env_loader::load_airstack_env_for_config(&config_path);
 
     match cli.command {
         Commands::Init {
@@ -353,8 +388,30 @@ async fn main() -> Result<()> {
         Commands::Cexec {
             server,
             container,
+            container_name,
             command,
-        } => commands::cexec::run(&config_path, &server, &container, command).await,
+            cmd,
+            script,
+        } => {
+            let resolved_container = container_name
+                .or(container)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Missing container name. Usage: airstack cexec <server> <container> -- <command>\nOr: airstack cexec <server> --container <container> -- <command>"
+                    )
+                })?;
+            commands::cexec::run(
+                &config_path,
+                &server,
+                &resolved_container,
+                commands::cexec::ContainerExec {
+                    command,
+                    cmd,
+                    script,
+                },
+            )
+            .await
+        }
         Commands::Scale { service, replicas } => {
             commands::scale::run(&config_path, &service, replicas).await
         }
@@ -364,16 +421,32 @@ async fn main() -> Result<()> {
         Commands::Status {
             detailed,
             probe,
+            provenance,
             source,
-        } => commands::status::run(&config_path, detailed, probe, &source).await,
-        Commands::Ssh { target, command } => {
-            commands::ssh::run(&config_path, &target, command).await
+        } => commands::status::run(&config_path, detailed, probe, provenance, &source).await,
+        Commands::Ssh {
+            target,
+            command,
+            cmd,
+            script,
+        } => {
+            commands::ssh::run(
+                &config_path,
+                &target,
+                commands::ssh::SshExec {
+                    command,
+                    cmd,
+                    script,
+                },
+            )
+            .await
         }
         Commands::Logs {
             service,
             follow,
             tail,
-        } => commands::logs::run(&config_path, &service, follow, tail).await,
+            source,
+        } => commands::logs::run(&config_path, &service, follow, tail, &source).await,
         Commands::Plan {
             include_destroy,
             auto_fallback,
@@ -405,6 +478,18 @@ async fn main() -> Result<()> {
         Commands::Ship(mut args) => {
             args.allow_local_deploy = cli.allow_local_deploy;
             commands::ship::run(&config_path, args).await
+        }
+        Commands::Build { mode, service } => {
+            let migration = match (mode.as_deref(), service.as_deref()) {
+                (Some("remote"), Some(svc)) => format!(
+                    "Legacy 'build remote' was replaced by:\n  airstack release {svc} --push --update-config --remote-build <server>\nOr atomic flow:\n  airstack ship {svc} --push --update-config"
+                ),
+                (_, Some(svc)) => format!(
+                    "Legacy 'build' was replaced by:\n  airstack release {svc} --push --update-config\nOr atomic flow:\n  airstack ship {svc} --push --update-config"
+                ),
+                _ => "Legacy 'build' was replaced by 'release' / 'ship'.\nTry:\n  airstack release <service> --push --update-config\n  airstack ship <service> --push --update-config".to_string(),
+            };
+            anyhow::bail!("{migration}");
         }
         Commands::SupportBundle(args) => commands::support_bundle::run(&config_path, args).await,
     }

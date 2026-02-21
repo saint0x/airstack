@@ -91,9 +91,15 @@ pub async fn execute_remote_command(
     server_cfg: &ServerConfig,
     command: &[String],
 ) -> Result<Output> {
+    execute_remote_shell_command(server_cfg, &join_shell_command(command)).await
+}
+
+pub async fn execute_remote_shell_command(
+    server_cfg: &ServerConfig,
+    command: &str,
+) -> Result<Output> {
     if server_cfg.provider == "fly" {
         let (app, machine) = resolve_fly_target(server_cfg).await?;
-        let cmd_string = join_shell_command(command);
 
         let mut fly_cmd = Command::new("flyctl");
         fly_cmd.arg("ssh");
@@ -105,7 +111,7 @@ pub async fn execute_remote_command(
             fly_cmd.arg(machine);
         }
         fly_cmd.arg("--command");
-        fly_cmd.arg(cmd_string);
+        fly_cmd.arg(command);
 
         return fly_cmd
             .output()
@@ -125,7 +131,7 @@ pub async fn execute_remote_command(
             log_level: "ERROR",
         },
     )?;
-    ssh_cmd.arg(join_shell_command(command));
+    ssh_cmd.arg(command);
     ssh_cmd.output().context("Failed to execute SSH command")
 }
 

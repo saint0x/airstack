@@ -93,14 +93,14 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack init [name] [--provider hetzner|fly] [--preset clickhouse]` | Initialize a project with provider/service presets |
 | `airstack up [--local] [--bootstrap-runtime] [--auto-fallback] [--resolve-capacity]` | Provision infrastructure (or explicit local mode) with optional runtime bootstrap |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy &lt;service&gt; [--latest-code --push] [--tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (`--tag` overrides image tag for this deploy; `--latest-code` builds locally) |
-| `airstack cexec &lt;server&gt; &lt;container&gt; [cmd...]` | Execute a command inside a remote container |
+| `airstack deploy &lt;service&gt; [--latest-code --push] [--tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (`--latest-code` auto-falls back to remote build in remote deploy mode when local Docker is unavailable) |
+| `airstack cexec &lt;server&gt; &lt;container&gt; [--cmd "<shell>"] [--script <path>] [-- <argv...>]` | Execute inside a remote container (shell, script, or raw argv mode) |
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack script <list|plan|run>` | Run remote lifecycle scripts defined in config |
-| `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode |
-| `airstack ssh &lt;server&gt;` | SSH into a server |
+| `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode (includes deploy provenance fields in JSON) |
+| `airstack ssh &lt;server&gt; [--cmd "<shell>"] [--script <path>] [-- <argv...>]` | SSH into a server (shell, script, or raw argv mode) |
 | `airstack logs &lt;service&gt;` | Show service logs |
 | `airstack plan [--auto-fallback] [--resolve-capacity]` | Preview create/update/destroy and deploy actions with infra compatibility preflight |
 | `airstack apply` | Apply desired infrastructure and services |
@@ -115,7 +115,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
 | `airstack provider profile <list|show|set|use|remove|snapshot|status>` | First-class provider profile management (Fly and any provider/custom env context) |
-| `airstack release &lt;service&gt; [--push] [--update-config]` | Build/publish release images |
+| `airstack release &lt;service&gt; [--push] [--update-config] [--remote-build <server>] [--from build\|push]` | Build/publish release images with structured phase output and phase resume |
 | `airstack ship &lt;service&gt; [--push --update-config] [--strategy rolling\|bluegreen\|canary]` | Atomic release+deploy with rollback on deploy failure |
 
 ### Output Modes
@@ -220,7 +220,7 @@ Currently supported:
   - Uses `flyctl` for provider operations
   - Auth resolution order: provider token -> `FLY_API_TOKEN` -> `FLY_ACCESS_TOKEN` -> local `flyctl auth`
   - Supports app/machine inventory, machine create/destroy, provider-native SSH (`flyctl ssh console`), and Fly-native workload inventory in `airstack status`
-  - `airstack cexec <fly-server> <container> -- <cmd...>` maps to `flyctl ssh console --container ...`
+  - `airstack cexec <fly-server> <container> -- <cmd...>` and `--cmd "<shell>"` map to `flyctl ssh console --container ...`
 
 ### Container Runtimes
 

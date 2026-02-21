@@ -131,6 +131,9 @@ pub async fn run(config_path: &str, service_name: &str, replicas: usize) -> Resu
             last_status: Some("Scaled".to_string()),
             last_checked_unix: unix_now(),
             last_error: None,
+            last_deploy_command: None,
+            last_deploy_unix: None,
+            image_origin: None,
         },
     );
     state.save()?;

@@ -33,6 +33,10 @@ struct ServiceStatusRecord {
     cached_health: Option<String>,
     cached_last_checked_unix: Option<u64>,
     image: Option<String>,
+    config_image: Option<String>,
+    last_deploy_command: Option<String>,
+    last_deploy_unix: Option<u64>,
+    image_origin: Option<String>,
     ports: Vec<String>,
     active_probe: Option<String>,
     note: Option<String>,
@@ -117,7 +121,13 @@ impl SourceMode {
     }
 }
 
-pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -> Result<()> {
+pub async fn run(
+    config_path: &str,
+    detailed: bool,
+    probe: bool,
+    provenance: bool,
+    source: &str,
+) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
     let drift = state.detect_drift(&config);
@@ -289,10 +299,6 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                 }
             }
         }
-
-        if !output::is_json() {
-            output::line("");
-        }
     }
 
     let mut remote_containers = Vec::new();
@@ -381,6 +387,19 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                         .map(|s| s.health.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
+                    config_image: Some(service_config.image.clone()),
+                    last_deploy_command: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_command.clone()),
+                    last_deploy_unix: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_unix),
+                    image_origin: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.image_origin.clone()),
                     ports: Vec::new(),
                     active_probe: active_probe.clone(),
                     note: Some(
@@ -411,6 +430,18 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                         last_status: Some(remote.status.clone()),
                         last_checked_unix: checked_at,
                         last_error: None,
+                        last_deploy_command: state
+                            .services
+                            .get(service_name)
+                            .and_then(|s| s.last_deploy_command.clone()),
+                        last_deploy_unix: state
+                            .services
+                            .get(service_name)
+                            .and_then(|s| s.last_deploy_unix),
+                        image_origin: state
+                            .services
+                            .get(service_name)
+                            .and_then(|s| s.image_origin.clone()),
                     },
                 );
 
@@ -436,6 +467,19 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                     cached_health: Some(health.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(remote.image.clone()),
+                    config_image: Some(service_config.image.clone()),
+                    last_deploy_command: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_command.clone()),
+                    last_deploy_unix: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_unix),
+                    image_origin: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.image_origin.clone()),
                     ports: remote.ports.clone(),
                     active_probe: active_probe.clone(),
                     note: local_observed
@@ -487,6 +531,18 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                                 last_status: Some(status_text.clone()),
                                 last_checked_unix: checked_at,
                                 last_error: None,
+                                last_deploy_command: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.last_deploy_command.clone()),
+                                last_deploy_unix: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.last_deploy_unix),
+                                image_origin: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.image_origin.clone()),
                             },
                         );
 
@@ -496,6 +552,19 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                             cached_health: Some(cached_health.as_str().to_string()),
                             cached_last_checked_unix: Some(checked_at),
                             image: Some(container.image.clone()),
+                            config_image: Some(service_config.image.clone()),
+                            last_deploy_command: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.last_deploy_command.clone()),
+                            last_deploy_unix: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.last_deploy_unix),
+                            image_origin: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.image_origin.clone()),
                             ports: container
                                 .ports
                                 .iter()
@@ -531,6 +600,18 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                                 last_status: Some("NotDeployed".to_string()),
                                 last_checked_unix: checked_at,
                                 last_error: Some("container not found".to_string()),
+                                last_deploy_command: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.last_deploy_command.clone()),
+                                last_deploy_unix: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.last_deploy_unix),
+                                image_origin: state
+                                    .services
+                                    .get(service_name)
+                                    .and_then(|s| s.image_origin.clone()),
                             },
                         );
 
@@ -540,6 +621,19 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                             cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
                             cached_last_checked_unix: Some(checked_at),
                             image: Some(service_config.image.clone()),
+                            config_image: Some(service_config.image.clone()),
+                            last_deploy_command: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.last_deploy_command.clone()),
+                            last_deploy_unix: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.last_deploy_unix),
+                            image_origin: state
+                                .services
+                                .get(service_name)
+                                .and_then(|s| s.image_origin.clone()),
                             ports: Vec::new(),
                             active_probe: active_probe.clone(),
                             note: Some("container not found".to_string()),
@@ -554,6 +648,19 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
                     cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
+                    config_image: Some(service_config.image.clone()),
+                    last_deploy_command: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_command.clone()),
+                    last_deploy_unix: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.last_deploy_unix),
+                    image_origin: state
+                        .services
+                        .get(service_name)
+                        .and_then(|s| s.image_origin.clone()),
                     ports: Vec::new(),
                     active_probe: active_probe.clone(),
                     note: Some("container provider init failed".to_string()),
@@ -562,6 +669,32 @@ pub async fn run(config_path: &str, detailed: bool, probe: bool, source: &str) -
         }
 
         if !output::is_json() {
+            if provenance {
+                output::line("🧾 Service Provenance:");
+                for record in &service_records {
+                    output::line(format!("   • {}", record.name));
+                    output::line(format!(
+                        "      Config Image: {}",
+                        record.config_image.as_deref().unwrap_or("unknown")
+                    ));
+                    output::line(format!(
+                        "      Running Image: {}",
+                        record.image.as_deref().unwrap_or("unknown")
+                    ));
+                    output::line(format!(
+                        "      Last Deploy: {} @ {}",
+                        record.last_deploy_command.as_deref().unwrap_or("unknown"),
+                        record
+                            .last_deploy_unix
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ));
+                    output::line(format!(
+                        "      Image Origin: {}",
+                        record.image_origin.as_deref().unwrap_or("unknown")
+                    ));
+                }
+            }
             output::line("");
         }
     }

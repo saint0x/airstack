@@ -1,4 +1,5 @@
 use crate::commands::edge;
+use crate::commands::release;
 use crate::dependencies::deployment_order;
 use crate::deploy_runtime::{
     collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
@@ -71,9 +72,47 @@ pub async fn run(
         let base_image = svc.image.split(':').next().unwrap_or(&svc.image);
         let resolved_tag = tag.unwrap_or(git_sha()?);
         let built_image = format!("{}:{}", base_image, resolved_tag);
-        run_cmd("docker", &["build", "-t", &built_image, "."])?;
-        if push {
-            run_cmd("docker", &["push", &built_image])?;
+        let remote_mode = is_remote_deploy_mode(&config);
+        let local_docker_ok = local_docker_available();
+
+        if !local_docker_ok && remote_mode {
+            if !push {
+                anyhow::bail!(
+                    "Local Docker daemon unavailable and deploy mode is remote. --latest-code in remote mode requires --push so remote hosts can pull the built image."
+                );
+            }
+            let remote_server = svc
+                .target_server
+                .clone()
+                .or_else(|| {
+                    config
+                        .infra
+                        .as_ref()
+                        .and_then(|i| i.servers.first().map(|s| s.name.clone()))
+                })
+                .context("Remote deploy mode selected but no infra server was found for --latest-code fallback")?;
+            output::line(format!(
+                "ℹ️ local Docker unavailable; using remote build fallback on '{}'",
+                remote_server
+            ));
+            release::run(
+                config_path,
+                release::ReleaseArgs {
+                    service: service_name.to_string(),
+                    tag: Some(resolved_tag.clone()),
+                    push: true,
+                    update_config: false,
+                    remote_build: Some(remote_server),
+                    from: release::ReleaseFrom::Build,
+                },
+            )
+            .await?;
+        } else {
+            release::preflight_local_docker_available()?;
+            run_cmd("docker", &["build", "-t", &built_image, "."])?;
+            if push {
+                run_cmd("docker", &["push", &built_image])?;
+            }
         }
         image_overrides.insert(service_name.to_string(), built_image);
     } else if let Some(tag) = tag {
@@ -182,6 +221,15 @@ pub async fn run(
                 last_status: Some(container.status.clone()),
                 last_checked_unix: unix_now(),
                 last_error: None,
+                last_deploy_command: Some(format!("airstack deploy {}", deploy_name)),
+                last_deploy_unix: Some(unix_now()),
+                image_origin: Some(if latest_code && push {
+                    "registry-pushed".to_string()
+                } else if latest_code {
+                    "local-build-only".to_string()
+                } else {
+                    "config-declared".to_string()
+                }),
             },
         );
 
@@ -209,6 +257,21 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn is_remote_deploy_mode(config: &AirstackConfig) -> bool {
+    if let Some(mode) = config.project.deploy_mode.as_deref() {
+        return mode == "remote";
+    }
+    config.infra.as_ref().is_some_and(|i| !i.servers.is_empty())
+}
+
+fn local_docker_available() -> bool {
+    std::process::Command::new("docker")
+        .arg("info")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {

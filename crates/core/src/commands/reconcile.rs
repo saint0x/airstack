@@ -45,5 +45,5 @@ pub async fn run(config_path: &str, args: ReconcileArgs) -> Result<()> {
         )
         .await?;
     }
-    status::run(config_path, args.detailed, false, "auto").await
+    status::run(config_path, args.detailed, false, false, "auto").await
 }

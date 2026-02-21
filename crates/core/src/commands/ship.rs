@@ -1,9 +1,11 @@
 use crate::commands::edge;
+use crate::commands::release;
 use crate::deploy_runtime::{
     collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
     existing_service_image, resolve_target, rollback_service, DeployStrategy,
 };
 use crate::output;
+use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
 use anyhow::{Context, Result};
 use clap::Args;
@@ -56,6 +58,7 @@ struct ShipOutput {
 
 pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let mut state = LocalState::load(&config.project.name)?;
     let services = config
         .services
         .as_ref()
@@ -73,6 +76,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     let final_image = format!("{}:{}", base_image, tag);
 
     // Build + push phase
+    release::preflight_local_docker_available()?;
     run_cmd("docker", &["build", "-t", &final_image, "."])?;
     if args.push {
         run_cmd("docker", &["push", &final_image])?;
@@ -130,8 +134,54 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     }
 
     if args.update_config {
-        update_config_image(config_path, &args.service, &final_image)?;
+        release::update_config_image(config_path, &args.service, &final_image)?;
     }
+
+    let now = unix_now();
+    let deploy_command = format!(
+        "airstack ship {} --tag {}{}{}",
+        args.service,
+        tag,
+        if args.push { " --push" } else { "" },
+        if args.update_config {
+            " --update-config"
+        } else {
+            ""
+        }
+    );
+    state
+        .services
+        .entry(args.service.clone())
+        .and_modify(|s| {
+            s.image = final_image.clone();
+            s.last_status = Some("Shipped".to_string());
+            s.last_checked_unix = now;
+            s.last_error = None;
+            s.last_deploy_command = Some(deploy_command.clone());
+            s.last_deploy_unix = Some(now);
+            s.image_origin = Some(if args.push {
+                "registry-pushed".to_string()
+            } else {
+                "local-build-only".to_string()
+            });
+        })
+        .or_insert(ServiceState {
+            image: final_image.clone(),
+            replicas: 0,
+            containers: Vec::new(),
+            health: HealthState::Unknown,
+            last_status: Some("Shipped".to_string()),
+            last_checked_unix: now,
+            last_error: None,
+            last_deploy_command: Some(deploy_command.clone()),
+            last_deploy_unix: Some(now),
+            image_origin: Some(if args.push {
+                "registry-pushed".to_string()
+            } else {
+                "local-build-only".to_string()
+            }),
+        });
+    state.save()?;
 
     if args.service == "caddy" && config.edge.is_some() {
         edge::apply_from_config(&config)
@@ -186,22 +236,9 @@ fn git_sha() -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn update_config_image(config_path: &str, service: &str, image: &str) -> Result<()> {
-    let raw = std::fs::read_to_string(config_path)
-        .with_context(|| format!("Failed to read config file {}", config_path))?;
-    let mut value: toml::Value = toml::from_str(&raw).context("Failed to parse TOML")?;
-
-    let services = value
-        .get_mut("services")
-        .and_then(|v| v.as_table_mut())
-        .context("[services] table missing in config")?;
-    let entry = services
-        .get_mut(service)
-        .and_then(|v| v.as_table_mut())
-        .with_context(|| format!("Service '{}' not found in config", service))?;
-    entry.insert("image".to_string(), toml::Value::String(image.to_string()));
-
-    std::fs::write(config_path, toml::to_string_pretty(&value)?)
-        .with_context(|| format!("Failed to write config file {}", config_path))?;
-    Ok(())
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

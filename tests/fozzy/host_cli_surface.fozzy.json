@@ -20,6 +20,12 @@
     {
       "type": "proc_spawn",
       "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "release", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
       "args": ["run", "-p", "airstack-core", "--", "ship", "--help"],
       "expect_exit": 0
     },
@@ -51,6 +57,18 @@
       "type": "proc_spawn",
       "cmd": "cargo",
       "args": ["run", "-p", "airstack-core", "--", "status", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "ssh", "--help"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "cexec", "--help"],
       "expect_exit": 0
     },
     { "type": "assert_ok", "value": true, "msg": "core CLI command surfaces compile and execute" }
