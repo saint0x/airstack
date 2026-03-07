@@ -3,7 +3,8 @@ use airstack_container::get_provider as get_container_provider;
 use airstack_metal::{get_provider as get_metal_provider, Server};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
@@ -63,6 +64,20 @@ struct StatusOutput {
     drift: DriftReport,
 }
 
+#[derive(Debug, Serialize)]
+struct AutoStatusFailure {
+    config_path: String,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoStatusOutput {
+    source_mode: String,
+    discovered_projects: usize,
+    projects: Vec<serde_json::Value>,
+    failures: Vec<AutoStatusFailure>,
+}
+
 #[derive(Debug, Deserialize)]
 struct FlyMachineStatusLine {
     id: String,
@@ -119,6 +134,105 @@ impl SourceMode {
             Self::ControlPlane => "control-plane",
         }
     }
+}
+
+pub async fn run_auto_discover(
+    detailed: bool,
+    probe: bool,
+    provenance: bool,
+    source: &str,
+) -> Result<()> {
+    let source_mode = SourceMode::parse(source)?;
+    let configs = discover_status_config_paths()?;
+    if configs.is_empty() {
+        anyhow::bail!(
+            "No airstack.toml discovered for `airstack status`. Set --config or define AIRSTACK_REPO."
+        );
+    }
+
+    if !output::is_json() {
+        output::line(format!(
+            "📡 Auto-discovered {} Airstack project(s)",
+            configs.len()
+        ));
+    }
+
+    let mut failures = Vec::new();
+    if output::is_json() {
+        let mut projects = Vec::new();
+        for config in &configs {
+            match run_status_json_child(config, detailed, probe, provenance, source_mode.as_str())
+                .await
+            {
+                Ok(value) => projects.push(attach_config_path(value, config)),
+                Err(err) => failures.push(AutoStatusFailure {
+                    config_path: config.display().to_string(),
+                    error: err.to_string(),
+                }),
+            }
+        }
+        let failure_count = failures.len();
+        let summary = failures
+            .iter()
+            .map(|f| format!("{} ({})", f.config_path, f.error))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        output::emit_json(&AutoStatusOutput {
+            source_mode: source_mode.as_str().to_string(),
+            discovered_projects: configs.len(),
+            projects,
+            failures,
+        })?;
+        if failure_count > 0 {
+            anyhow::bail!(
+                "status failed for {} project(s): {}",
+                failure_count,
+                summary
+            );
+        }
+        return Ok(());
+    } else {
+        for (idx, config) in configs.iter().enumerate() {
+            if idx > 0 {
+                output::line("");
+                output::line("────────────────────────────────────────");
+            }
+            output::line(format!("Config: {}", config.display()));
+
+            let config_path = config.to_string_lossy().to_string();
+            if let Err(err) = run(
+                &config_path,
+                detailed,
+                probe,
+                provenance,
+                source_mode.as_str(),
+            )
+            .await
+            {
+                output::error_line(format!("Status failed for {}: {}", config.display(), err));
+                failures.push(AutoStatusFailure {
+                    config_path: config.display().to_string(),
+                    error: err.to_string(),
+                });
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    let summary = failures
+        .iter()
+        .map(|f| format!("{} ({})", f.config_path, f.error))
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "status failed for {} project(s): {}",
+        failures.len(),
+        summary
+    )
 }
 
 pub async fn run(
@@ -766,6 +880,160 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn discover_status_config_paths() -> Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    let cwd = std::env::current_dir().context("Failed to get current directory")?;
+    roots.push(cwd);
+    let mut has_repo_root = false;
+    if let Ok(repo_root) = std::env::var("AIRSTACK_REPO") {
+        let trimmed = repo_root.trim();
+        if !trimmed.is_empty() {
+            roots.push(PathBuf::from(trimmed));
+            has_repo_root = true;
+        }
+    }
+    if !has_repo_root {
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home.join("Desktop"));
+        }
+    }
+    let mut canonical_roots = BTreeSet::new();
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        canonical_roots.insert(normalize_path(&root));
+    }
+
+    let mut configs = BTreeSet::new();
+    for root in canonical_roots {
+        collect_config_files(&root, 0, 4, &mut configs)?;
+    }
+
+    Ok(configs.into_iter().collect())
+}
+
+fn collect_config_files(
+    root: &Path,
+    depth: usize,
+    max_depth: usize,
+    out: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let config_path = root.join("airstack.toml");
+    if config_path.is_file() {
+        out.insert(normalize_path(&config_path));
+    }
+
+    if depth >= max_depth {
+        return Ok(());
+    }
+
+    let entries = match std::fs::read_dir(root) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        if should_skip_discovery_dir(name.to_string_lossy().as_ref()) {
+            continue;
+        }
+        collect_config_files(&path, depth + 1, max_depth, out)?;
+    }
+
+    Ok(())
+}
+
+fn should_skip_discovery_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".svn"
+            | ".hg"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".cache"
+            | ".beads"
+            | "__pycache__"
+    )
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn attach_config_path(value: serde_json::Value, config_path: &Path) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut obj) => {
+            obj.insert(
+                "config_path".to_string(),
+                serde_json::Value::String(config_path.display().to_string()),
+            );
+            serde_json::Value::Object(obj)
+        }
+        other => serde_json::json!({
+            "config_path": config_path.display().to_string(),
+            "status": other
+        }),
+    }
+}
+
+async fn run_status_json_child(
+    config_path: &Path,
+    detailed: bool,
+    probe: bool,
+    provenance: bool,
+    source: &str,
+) -> Result<serde_json::Value> {
+    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("--json")
+        .arg("--config")
+        .arg(config_path)
+        .arg("status");
+    if detailed {
+        cmd.arg("--detailed");
+    }
+    if probe {
+        cmd.arg("--probe");
+    }
+    if provenance {
+        cmd.arg("--provenance");
+    }
+    if source != "auto" {
+        cmd.arg("--source").arg(source);
+    }
+
+    let out = cmd
+        .output()
+        .await
+        .context("Failed to execute child status process")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        anyhow::bail!(
+            "child status failed for {}: {}",
+            config_path.display(),
+            detail
+        );
+    }
+
+    let stdout = String::from_utf8(out.stdout).context("Status JSON output was not UTF-8")?;
+    serde_json::from_str(stdout.trim()).context("Failed to parse status JSON output")
 }
 
 async fn inspect_remote_containers_for_server(

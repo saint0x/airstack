@@ -1,6 +1,10 @@
 use airstack_config::AirstackConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -17,10 +21,19 @@ mod ssh_utils;
 mod state;
 mod theme;
 
+const AIRSTACK_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("AIRSTACK_GIT_SHA"),
+    ", built ",
+    env!("AIRSTACK_BUILD_TIMESTAMP"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(name = "airstack")]
 #[command(about = "Modular, type-safe infrastructure SDK and CLI")]
-#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(version = AIRSTACK_VERSION)]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -31,7 +44,7 @@ pub struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Configuration file path (default: ./airstack.toml in current directory)"
+        help = "Configuration file path (default: nearest ./airstack.toml in current or parent directories)"
     )]
     config: Option<String>,
 
@@ -105,6 +118,11 @@ enum Commands {
         auto_fallback: bool,
         #[arg(long, help = "Resolve server region/type capacity automatically")]
         resolve_capacity: bool,
+        #[arg(
+            long,
+            help = "Auto-create missing remote bind-mount host paths during preflight"
+        )]
+        ensure_host_paths: bool,
     },
     #[command(about = "Destroy infrastructure")]
     Destroy {
@@ -141,6 +159,11 @@ enum Commands {
             default_value_t = 45
         )]
         canary_seconds: u64,
+        #[arg(
+            long,
+            help = "Auto-create missing remote bind-mount host paths during preflight"
+        )]
+        ensure_host_paths: bool,
     },
     #[command(about = "Execute a command inside a container on a remote server")]
     #[command(
@@ -246,7 +269,13 @@ enum Commands {
         resolve_capacity: bool,
     },
     #[command(about = "Apply desired infrastructure and services")]
-    Apply,
+    Apply {
+        #[arg(
+            long,
+            help = "Auto-create missing remote bind-mount host paths during preflight"
+        )]
+        ensure_host_paths: bool,
+    },
     #[command(about = "Edge reverse-proxy workflows")]
     Edge {
         #[command(subcommand)]
@@ -288,10 +317,47 @@ enum Commands {
     Ship(commands::ship::ShipArgs),
     #[command(about = "Collect status/log/diagnostic artifacts for bug reports")]
     SupportBundle(commands::support_bundle::SupportBundleArgs),
+    #[command(about = "Upload a local file to a remote server with checksum verification")]
+    Upload {
+        #[arg(help = "Server name")]
+        target: String,
+        #[arg(help = "Local source file path")]
+        source: String,
+        #[arg(help = "Remote destination file path")]
+        destination: String,
+        #[arg(
+            long,
+            help = "Expected sha256 checksum (defaults to local file sha256)"
+        )]
+        checksum: Option<String>,
+        #[arg(long, help = "chmod mode to apply after upload (for example 0644)")]
+        mode: Option<String>,
+        #[arg(long, help = "Disable atomic move and write destination directly")]
+        no_atomic: bool,
+    },
+    #[command(about = "Alias for `airstack upload`")]
+    Cp {
+        #[arg(help = "Server name")]
+        target: String,
+        #[arg(help = "Local source file path")]
+        source: String,
+        #[arg(help = "Remote destination file path")]
+        destination: String,
+        #[arg(
+            long,
+            help = "Expected sha256 checksum (defaults to local file sha256)"
+        )]
+        checksum: Option<String>,
+        #[arg(long, help = "chmod mode to apply after upload (for example 0644)")]
+        mode: Option<String>,
+        #[arg(long, help = "Disable atomic move and write destination directly")]
+        no_atomic: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = cleanup_stale_repo_binary();
     env_loader::load_airstack_env();
 
     let cli = Cli::parse();
@@ -323,15 +389,27 @@ async fn main() -> Result<()> {
 
     info!("Airstack CLI v{}", env!("CARGO_PKG_VERSION"));
 
-    let config_path = match (&cli.command, &cli.config) {
-        (Commands::Init { .. }, Some(path)) => path.clone(),
-        (Commands::Init { .. }, None) => "airstack.toml".to_string(),
-        (_, Some(path)) => path.clone(),
-        (_, None) => AirstackConfig::get_config_path()?
-            .to_string_lossy()
-            .to_string(),
+    let (config_path, has_resolved_config) = match (&cli.command, &cli.config) {
+        (Commands::Init { .. }, Some(path)) => (path.clone(), true),
+        (Commands::Init { .. }, None) => ("airstack.toml".to_string(), true),
+        (_, Some(path)) => (path.clone(), true),
+        (_, None) => match AirstackConfig::get_config_path() {
+            Ok(path) => (path.to_string_lossy().to_string(), true),
+            Err(err) => {
+                if matches!(cli.command, Commands::Status { .. }) {
+                    (String::new(), false)
+                } else {
+                    return Err(err);
+                }
+            }
+        },
     };
-    env_loader::load_airstack_env_for_config(&config_path);
+    if has_resolved_config {
+        env_loader::load_airstack_env_for_config(&config_path);
+        if is_mutating_command(&cli.command) {
+            enforce_provider_mutation_guard(&config_path, cli.yes)?;
+        }
+    }
 
     match cli.command {
         Commands::Init {
@@ -346,6 +424,7 @@ async fn main() -> Result<()> {
             bootstrap_runtime,
             auto_fallback,
             resolve_capacity,
+            ensure_host_paths,
         } => {
             commands::up::run(
                 &config_path,
@@ -357,6 +436,7 @@ async fn main() -> Result<()> {
                 bootstrap_runtime,
                 auto_fallback,
                 resolve_capacity,
+                ensure_host_paths,
             )
             .await
         }
@@ -371,6 +451,7 @@ async fn main() -> Result<()> {
             tag,
             strategy,
             canary_seconds,
+            ensure_host_paths,
         } => {
             commands::deploy::run(
                 &config_path,
@@ -382,6 +463,7 @@ async fn main() -> Result<()> {
                 tag,
                 strategy,
                 canary_seconds,
+                ensure_host_paths,
             )
             .await
         }
@@ -423,7 +505,13 @@ async fn main() -> Result<()> {
             probe,
             provenance,
             source,
-        } => commands::status::run(&config_path, detailed, probe, provenance, &source).await,
+        } => {
+            if has_resolved_config {
+                commands::status::run(&config_path, detailed, probe, provenance, &source).await
+            } else {
+                commands::status::run_auto_discover(detailed, probe, provenance, &source).await
+            }
+        }
         Commands::Ssh {
             target,
             command,
@@ -460,7 +548,9 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Apply => commands::apply::run(&config_path, cli.allow_local_deploy).await,
+        Commands::Apply { ensure_host_paths } => {
+            commands::apply::run(&config_path, cli.allow_local_deploy, ensure_host_paths).await
+        }
         Commands::Edge { command } => commands::edge::run(&config_path, command).await,
         Commands::Doctor => commands::doctor::run(&config_path).await,
         Commands::GoLive(args) => commands::golive::run(&config_path, args).await,
@@ -492,5 +582,209 @@ async fn main() -> Result<()> {
             anyhow::bail!("{migration}");
         }
         Commands::SupportBundle(args) => commands::support_bundle::run(&config_path, args).await,
+        Commands::Upload {
+            target,
+            source,
+            destination,
+            checksum,
+            mode,
+            no_atomic,
+        }
+        | Commands::Cp {
+            target,
+            source,
+            destination,
+            checksum,
+            mode,
+            no_atomic,
+        } => {
+            commands::upload::run(
+                &config_path,
+                commands::upload::UploadArgs {
+                    target,
+                    source,
+                    destination,
+                    checksum,
+                    mode,
+                    no_atomic,
+                },
+            )
+            .await
+        }
     }
+}
+
+fn cleanup_stale_repo_binary() -> Result<()> {
+    let exe = std::env::current_exe().context("Failed to resolve current executable path")?;
+    let exe_canon = exe.canonicalize().unwrap_or(exe.clone());
+    let exe_text = exe_canon.to_string_lossy();
+
+    // Only auto-clean when running from cargo target output.
+    if !exe_text.contains("/target/") {
+        return Ok(());
+    }
+
+    let Some(root) = find_workspace_root(&exe_canon) else {
+        return Ok(());
+    };
+    let bin_path = root.join("bin").join("airstack");
+    if !bin_path.exists() {
+        return Ok(());
+    }
+
+    let same = bin_path
+        .canonicalize()
+        .map(|p| p == exe_canon)
+        .unwrap_or(false);
+    if same {
+        return Ok(());
+    }
+
+    let _ = fs::remove_file(&bin_path);
+    #[cfg(unix)]
+    {
+        let _ = std::os::unix::fs::symlink(&exe_canon, &bin_path);
+    }
+    Ok(())
+}
+
+fn find_workspace_root(path: &Path) -> Option<PathBuf> {
+    for anc in path.ancestors() {
+        let cargo_toml = anc.join("Cargo.toml");
+        let crates_dir = anc.join("crates");
+        if cargo_toml.exists() && crates_dir.is_dir() {
+            return Some(anc.to_path_buf());
+        }
+    }
+    None
+}
+
+fn is_mutating_command(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Up { .. }
+            | Commands::Deploy { .. }
+            | Commands::Destroy { .. }
+            | Commands::Apply { .. }
+            | Commands::Ship(_)
+    )
+}
+
+fn enforce_provider_mutation_guard(config_path: &str, assume_yes: bool) -> Result<()> {
+    let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
+    let providers = config
+        .infra
+        .as_ref()
+        .map(|infra| {
+            infra
+                .servers
+                .iter()
+                .map(|s| s.provider.clone())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if providers.is_empty() {
+        return Ok(());
+    }
+
+    let store = provider_profiles::load_store()?;
+    let pins = config
+        .providers
+        .as_ref()
+        .and_then(|p| p.profiles.clone())
+        .unwrap_or_default();
+
+    let mut rows = Vec::new();
+    for provider in providers {
+        let active = store.active.get(&provider).cloned();
+        let pinned = pins.get(&provider).cloned();
+        let selected = pinned.clone().or(active.clone());
+        if let Some(profile) = selected {
+            let identity = provider_profiles::resolve_profile_identity(&store, &provider, &profile);
+            let targets = config
+                .infra
+                .as_ref()
+                .map(|infra| {
+                    infra
+                        .servers
+                        .iter()
+                        .filter(|s| s.provider == provider)
+                        .map(|s| s.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            rows.push(BTreeMap::from([
+                ("provider".to_string(), provider.clone()),
+                (
+                    "active_profile".to_string(),
+                    active.unwrap_or_else(|| "none".to_string()),
+                ),
+                (
+                    "pinned_profile".to_string(),
+                    pinned.unwrap_or_else(|| "none".to_string()),
+                ),
+                ("selected_profile".to_string(), profile),
+                (
+                    "account".to_string(),
+                    identity.account.unwrap_or_else(|| "unknown".to_string()),
+                ),
+                (
+                    "organization".to_string(),
+                    identity
+                        .organization
+                        .unwrap_or_else(|| "unknown".to_string()),
+                ),
+                ("targets".to_string(), targets.join(",")),
+                (
+                    "auth_ok".to_string(),
+                    if identity.auth_ok { "true" } else { "false" }.to_string(),
+                ),
+            ]));
+        }
+    }
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    if output::is_json() && !assume_yes {
+        anyhow::bail!(
+            "Provider profile mutation guard requires confirmation for mutating commands. Re-run with -y to continue."
+        );
+    }
+
+    if !output::is_json() {
+        output::line("🔐 Provider Preflight (mutating command)");
+        for row in &rows {
+            output::line(format!(
+                "- provider={} active={} pinned={} selected={} auth_ok={} account={} org={} targets=[{}]",
+                row.get("provider").map(String::as_str).unwrap_or("unknown"),
+                row.get("active_profile").map(String::as_str).unwrap_or("none"),
+                row.get("pinned_profile").map(String::as_str).unwrap_or("none"),
+                row.get("selected_profile")
+                    .map(String::as_str)
+                    .unwrap_or("none"),
+                row.get("auth_ok").map(String::as_str).unwrap_or("false"),
+                row.get("account").map(String::as_str).unwrap_or("unknown"),
+                row.get("organization").map(String::as_str).unwrap_or("unknown"),
+                row.get("targets").map(String::as_str).unwrap_or("")
+            ));
+        }
+    }
+
+    if assume_yes {
+        return Ok(());
+    }
+    if output::is_json() {
+        anyhow::bail!("Refusing mutating command without -y in JSON mode");
+    }
+
+    print!("Proceed with mutating operation using the above provider profile context? (y/N): ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if !input.trim().to_ascii_lowercase().starts_with('y') {
+        anyhow::bail!("Aborted by provider profile mutation guard");
+    }
+    Ok(())
 }

@@ -21,6 +21,18 @@ echo "[fozzy] host-backed quality gate"
 fozzy run tests/fozzy/host_quality_gate.fozzy.json \
   --proc-backend host --fs-backend host --http-backend host --json
 
+echo "[fozzy] host-backed edge/upload regression"
+fozzy run tests/fozzy/host_edge_upload_regression.fozzy.json \
+  --proc-backend host --fs-backend host --http-backend host --json
+
+echo "[fozzy] host-backed provider profiles"
+fozzy run tests/fozzy/host_provider_profiles.fozzy.json \
+  --proc-backend host --fs-backend host --http-backend host --json
+
+echo "[fozzy] host-backed status autodiscovery"
+fozzy run tests/fozzy/host_status_autodiscover.fozzy.json \
+  --proc-backend host --fs-backend host --http-backend host --json
+
 echo "[fozzy] one-off run + artifacts/report"
 trace_out="/tmp/airstack-fozzy-suite.fozzy"
 run_json="$(fozzy run tests/example.fozzy.json --det --seed 4242 --record "$trace_out" --record-collision overwrite --json)"

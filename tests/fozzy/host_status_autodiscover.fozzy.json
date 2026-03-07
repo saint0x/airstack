@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "host_status_autodiscover",
+  "steps": [
+    { "type": "trace_event", "name": "suite_start", "fields": { "domain": "status-autodiscover" } },
+    {
+      "type": "proc_spawn",
+      "cmd": "sh",
+      "args": [
+        "-lc",
+        "repo_root=$(pwd)\ntmpdir=$(mktemp -d)\nmkdir -p \"$tmpdir/repo/proj-a\" \"$tmpdir/repo/group/proj-b\"\ncat > \"$tmpdir/repo/proj-a/airstack.toml\" <<'TOML'\n[project]\nname = \"proj-a\"\ndeploy_mode = \"remote\"\nTOML\ncat > \"$tmpdir/repo/group/proj-b/airstack.toml\" <<'TOML'\n[project]\nname = \"proj-b\"\ndeploy_mode = \"remote\"\nTOML\ncd \"$tmpdir\"\nAIRSTACK_REPO=\"$tmpdir/repo\" cargo run --manifest-path \"$repo_root/Cargo.toml\" -p airstack-core -- --json status > \"$tmpdir/status.json\"\ngrep -q '\"discovered_projects\": 2' \"$tmpdir/status.json\"\ngrep -q '\"project\": \"proj-a\"' \"$tmpdir/status.json\"\ngrep -q '\"project\": \"proj-b\"' \"$tmpdir/status.json\"\ngrep -q '\"config_path\":' \"$tmpdir/status.json\"\n"
+      ],
+      "expect_exit": 0
+    },
+    { "type": "assert_ok", "value": true, "msg": "status autodiscovery aggregates project statuses outside a stack directory" }
+  ]
+}
