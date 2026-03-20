@@ -6,6 +6,13 @@ use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 use std::process::Command;
 
+#[derive(Debug, Clone)]
+pub struct RemotePushFailure {
+    pub image: String,
+    pub registry: String,
+    pub last_error: String,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct ReleaseArgs {
     #[arg(help = "Service name")]
@@ -77,7 +84,28 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
         let server = resolve_remote_build_server(&config, server_name)?;
         if args.push {
             emit_phase(&operation_id, "push", "start");
-            run_remote_push(server, &final_image).await?;
+            if let Err(push_failure) = run_remote_push(server, &final_image).await {
+                let recovery_hint = build_remote_push_recovery_hint(
+                    &config,
+                    svc,
+                    server,
+                    server_name,
+                    &args.service,
+                    &tag,
+                    &final_image,
+                )
+                .await?;
+                anyhow::bail!(
+                    "Remote registry push failed on '{}' for '{}'. Airstack used remote daemon auth only. Ensure remote auth with `docker login {}` on the target host. Last error: {}{}",
+                    server.name,
+                    push_failure.image,
+                    push_failure.registry,
+                    push_failure.last_error,
+                    recovery_hint
+                        .map(|hint| format!("\n{}", hint))
+                        .unwrap_or_default()
+                );
+            }
             emit_phase(&operation_id, "push", "ok");
         }
     } else {
@@ -221,12 +249,7 @@ pub async fn run_remote_build(server: &ServerConfig, server_name: &str, image: &
 }
 
 pub async fn preflight_remote_push_requirements(server: &ServerConfig, image: &str) -> Result<()> {
-    let Some(registry_host) = explicit_registry_host(image) else {
-        anyhow::bail!(
-            "Remote push requires an explicit registry host in image name. Example: ghcr.io/<org>/<image>:<tag>. Got '{}'",
-            image
-        );
-    };
+    let registry_host = registry_host_for_login(image).unwrap_or_else(|| "docker.io".to_string());
 
     let checks = [
         "command -v docker >/dev/null 2>&1",
@@ -316,7 +339,10 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-async fn run_remote_push(server: &ServerConfig, image: &str) -> Result<()> {
+pub async fn run_remote_push(
+    server: &ServerConfig,
+    image: &str,
+) -> std::result::Result<(), RemotePushFailure> {
     let registry = registry_host_for_login(image).unwrap_or_else(|| "docker.io".to_string());
     let quoted = shell_quote(image);
     let scripts = [
@@ -330,7 +356,12 @@ async fn run_remote_push(server: &ServerConfig, image: &str) -> Result<()> {
             server,
             &["sh".to_string(), "-lc".to_string(), script.to_string()],
         )
-        .await?;
+        .await
+        .map_err(|err| RemotePushFailure {
+            image: image.to_string(),
+            registry: registry.clone(),
+            last_error: err.to_string(),
+        })?;
         if out.status.success() {
             return Ok(());
         }
@@ -346,13 +377,11 @@ async fn run_remote_push(server: &ServerConfig, image: &str) -> Result<()> {
         last_err = merged;
     }
 
-    anyhow::bail!(
-        "Remote registry push failed on '{}' for '{}'. Airstack used remote daemon auth (not local Docker credential helpers). Ensure remote auth with 'docker login {}' on the target host. Last error: {}",
-        server.name,
-        image,
+    Err(RemotePushFailure {
+        image: image.to_string(),
         registry,
-        last_err
-    );
+        last_error: last_err,
+    })
 }
 
 fn shell_quote(value: &str) -> String {
@@ -382,6 +411,66 @@ fn explicit_registry_host(image: &str) -> Option<String> {
 
 fn registry_host_for_login(image: &str) -> Option<String> {
     explicit_registry_host(image).or_else(|| Some("docker.io".to_string()))
+}
+
+async fn build_remote_push_recovery_hint(
+    config: &AirstackConfig,
+    service_cfg: &airstack_config::ServiceConfig,
+    build_server: &ServerConfig,
+    build_server_name: &str,
+    service_name: &str,
+    tag: &str,
+    image: &str,
+) -> Result<Option<String>> {
+    if !remote_image_present(build_server, image).await? {
+        return Ok(None);
+    }
+
+    let target_server_name = service_cfg
+        .target_server
+        .clone()
+        .or_else(|| {
+            config
+                .infra
+                .as_ref()
+                .and_then(|infra| infra.servers.first().map(|s| s.name.clone()))
+        })
+        .unwrap_or_default();
+
+    if target_server_name == build_server_name {
+        return Ok(Some(format!(
+            "Recovery path: image '{}' is already present on deploy target '{}'. You can continue without a registry push using `airstack deploy {} --tag {}`.",
+            image, build_server_name, service_name, tag
+        )));
+    }
+
+    Ok(Some(format!(
+        "Recovery note: image '{}' exists on remote build host '{}', but the deploy target is '{}'. Registry push is still required unless you retag/rebuild on the deploy target.",
+        image,
+        build_server_name,
+        if target_server_name.is_empty() {
+            "unknown"
+        } else {
+            &target_server_name
+        }
+    )))
+}
+
+pub async fn remote_image_present(server: &ServerConfig, image: &str) -> Result<bool> {
+    let out = execute_remote_command(
+        server,
+        &[
+            "sh".to_string(),
+            "-lc".to_string(),
+            format!(
+                "docker image inspect {} >/dev/null 2>&1 || sudo -n docker image inspect {} >/dev/null 2>&1",
+                shell_quote(image),
+                shell_quote(image)
+            ),
+        ],
+    )
+    .await?;
+    Ok(out.status.success())
 }
 
 pub fn update_config_image(config_path: &str, service: &str, image: &str) -> Result<()> {

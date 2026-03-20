@@ -44,6 +44,7 @@ pub async fn run(
     tag: Option<String>,
     strategy: String,
     canary_seconds: u64,
+    ensure_host_paths: bool,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
@@ -76,11 +77,6 @@ pub async fn run(
         let local_docker_ok = local_docker_available();
 
         if !local_docker_ok && remote_mode {
-            if !push {
-                anyhow::bail!(
-                    "Local Docker daemon unavailable and deploy mode is remote. --latest-code in remote mode requires --push so remote hosts can pull the built image."
-                );
-            }
             let remote_server = svc
                 .target_server
                 .clone()
@@ -95,18 +91,41 @@ pub async fn run(
                 "ℹ️ local Docker unavailable; using remote build fallback on '{}'",
                 remote_server
             ));
-            release::run(
-                config_path,
-                release::ReleaseArgs {
-                    service: service_name.to_string(),
-                    tag: Some(resolved_tag.clone()),
-                    push: true,
-                    update_config: false,
-                    remote_build: Some(remote_server),
-                    from: release::ReleaseFrom::Build,
-                },
-            )
-            .await?;
+            let server = release::resolve_remote_build_server(&config, &remote_server)?;
+            release::run_remote_build(server, &remote_server, &built_image).await?;
+
+            if push {
+                release::preflight_remote_push_requirements(server, &built_image).await?;
+                match release::run_remote_push(server, &built_image).await {
+                    Ok(()) => {
+                        output::line("✅ remote build push completed");
+                    }
+                    Err(push_failure) => {
+                        if deploy_target_matches_build_server(svc, &config, &remote_server) {
+                            output::line(format!(
+                                "⚠️ remote push failed, but image '{}' exists on deploy target '{}'; continuing with direct remote deploy. registry={} error={}",
+                                built_image,
+                                remote_server,
+                                push_failure.registry,
+                                push_failure.last_error
+                            ));
+                        } else {
+                            anyhow::bail!(
+                                "Remote build succeeded on '{}', but push failed for '{}'. registry={} error={}. The deploy target is different, so registry availability is still required.",
+                                remote_server,
+                                built_image,
+                                push_failure.registry,
+                                push_failure.last_error
+                            );
+                        }
+                    }
+                }
+            } else if !deploy_target_matches_build_server(svc, &config, &remote_server) {
+                anyhow::bail!(
+                    "Local Docker daemon unavailable and remote build ran on '{}', but deploy target differs. Use --push so the deploy target can pull the built image.",
+                    remote_server
+                );
+            }
         } else {
             release::preflight_local_docker_available()?;
             run_cmd("docker", &["build", "-t", &built_image, "."])?;
@@ -157,6 +176,7 @@ pub async fn run(
             service.healthcheck.as_ref(),
             strategy,
             canary_seconds,
+            ensure_host_paths,
         )
         .await
         .with_context(|| format!("Failed to deploy service {}", deploy_name))?;
@@ -257,6 +277,20 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+fn deploy_target_matches_build_server(
+    service: &airstack_config::ServiceConfig,
+    config: &AirstackConfig,
+    build_server: &str,
+) -> bool {
+    let target = service.target_server.clone().or_else(|| {
+        config
+            .infra
+            .as_ref()
+            .and_then(|infra| infra.servers.first().map(|s| s.name.clone()))
+    });
+    target.as_deref() == Some(build_server)
 }
 
 fn is_remote_deploy_mode(config: &AirstackConfig) -> bool {

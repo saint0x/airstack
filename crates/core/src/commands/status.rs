@@ -34,6 +34,7 @@ struct ServiceStatusRecord {
     cached_health: Option<String>,
     cached_last_checked_unix: Option<u64>,
     image: Option<String>,
+    running_image_id: Option<String>,
     config_image: Option<String>,
     last_deploy_command: Option<String>,
     last_deploy_unix: Option<u64>,
@@ -501,6 +502,7 @@ pub async fn run(
                         .map(|s| s.health.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
+                    running_image_id: None,
                     config_image: Some(service_config.image.clone()),
                     last_deploy_command: state
                         .services
@@ -528,6 +530,21 @@ pub async fn run(
                 find_remote_for_service(service_name, service_config, &remote_containers)
             {
                 let checked_at = unix_now();
+                let running_image_id =
+                    if provenance {
+                        if let Some(server_cfg) = config.infra.as_ref().and_then(|infra| {
+                            infra.servers.iter().find(|s| s.name == remote.server)
+                        }) {
+                            remote_runtime_image_id(server_cfg, &remote.name)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                 let mut health = map_remote_container_health(&remote.status);
                 if let Some(probe_text) = &active_probe {
                     if !probe_indicates_service_ok(probe_text) {
@@ -581,6 +598,7 @@ pub async fn run(
                     cached_health: Some(health.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(remote.image.clone()),
+                    running_image_id,
                     config_image: Some(service_config.image.clone()),
                     last_deploy_command: state
                         .services
@@ -666,6 +684,11 @@ pub async fn run(
                             cached_health: Some(cached_health.as_str().to_string()),
                             cached_last_checked_unix: Some(checked_at),
                             image: Some(container.image.clone()),
+                            running_image_id: if provenance {
+                                local_runtime_image_id(service_name).await.ok().flatten()
+                            } else {
+                                None
+                            },
                             config_image: Some(service_config.image.clone()),
                             last_deploy_command: state
                                 .services
@@ -735,6 +758,7 @@ pub async fn run(
                             cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
                             cached_last_checked_unix: Some(checked_at),
                             image: Some(service_config.image.clone()),
+                            running_image_id: None,
                             config_image: Some(service_config.image.clone()),
                             last_deploy_command: state
                                 .services
@@ -762,6 +786,7 @@ pub async fn run(
                     cached_health: Some(HealthState::Unhealthy.as_str().to_string()),
                     cached_last_checked_unix: Some(checked_at),
                     image: Some(service_config.image.clone()),
+                    running_image_id: None,
                     config_image: Some(service_config.image.clone()),
                     last_deploy_command: state
                         .services
@@ -782,6 +807,16 @@ pub async fn run(
             }
         }
 
+        if !provenance {
+            for record in &mut service_records {
+                record.running_image_id = None;
+                record.config_image = None;
+                record.last_deploy_command = None;
+                record.last_deploy_unix = None;
+                record.image_origin = None;
+            }
+        }
+
         if !output::is_json() {
             if provenance {
                 output::line("🧾 Service Provenance:");
@@ -794,6 +829,10 @@ pub async fn run(
                     output::line(format!(
                         "      Running Image: {}",
                         record.image.as_deref().unwrap_or("unknown")
+                    ));
+                    output::line(format!(
+                        "      Running Image ID: {}",
+                        record.running_image_id.as_deref().unwrap_or("unknown")
                     ));
                     output::line(format!(
                         "      Last Deploy: {} @ {}",
@@ -880,6 +919,59 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+async fn local_runtime_image_id(name: &str) -> Result<Option<String>> {
+    let out = Command::new("sh")
+        .arg("-lc")
+        .arg(format!(
+            "docker inspect -f '{{{{.Image}}}}' {} 2>/dev/null || true",
+            shell_quote(name)
+        ))
+        .output()
+        .await
+        .context("Failed to inspect local docker image id")?;
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+async fn remote_runtime_image_id(server_cfg: &ServerConfig, name: &str) -> Result<Option<String>> {
+    let out = execute_remote_command(
+        server_cfg,
+        &[
+            "sh".to_string(),
+            "-lc".to_string(),
+            format!(
+                "docker inspect -f '{{{{.Image}}}}' {} 2>/dev/null || sudo -n docker inspect -f '{{{{.Image}}}}' {} 2>/dev/null || true",
+                shell_quote(name),
+                shell_quote(name)
+            ),
+        ],
+    )
+    .await?;
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "-_./:".contains(ch))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn discover_status_config_paths() -> Result<Vec<PathBuf>> {
