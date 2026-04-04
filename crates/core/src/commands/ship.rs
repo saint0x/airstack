@@ -43,6 +43,11 @@ pub struct ShipArgs {
         default_value_t = 45
     )]
     pub canary_seconds: u64,
+    #[arg(
+        long,
+        help = "Auto-create missing remote bind-mount host paths during preflight"
+    )]
+    pub ensure_host_paths: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +102,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
         service_cfg.healthcheck.as_ref(),
         strategy,
         args.canary_seconds,
+        args.ensure_host_paths,
     )
     .await
     .with_context(|| format!("Failed deploying ship image for '{}'", args.service))?;

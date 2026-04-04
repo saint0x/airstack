@@ -76,6 +76,7 @@ async fn infrastructure_menu(theme: &ColorfulTheme, config_path: &str) -> Result
                         false,
                         false,
                         false,
+                        false,
                     )
                     .await,
                 );
@@ -129,6 +130,7 @@ async fn services_menu(
                                 None,
                                 "rolling".to_string(),
                                 45,
+                                false,
                             )
                             .await,
                         );
@@ -217,7 +219,7 @@ async fn planning_menu(theme: &ColorfulTheme, config_path: &str) -> Result<()> {
         )?;
         match choice {
             0 => run_and_continue(commands::plan::run(config_path, false, false, false).await),
-            1 => run_and_continue(commands::apply::run(config_path, false).await),
+            1 => run_and_continue(commands::apply::run(config_path, false, false).await),
             2 => run_and_continue(commands::doctor::run(config_path).await),
             3 => run_and_continue(
                 commands::golive::run(

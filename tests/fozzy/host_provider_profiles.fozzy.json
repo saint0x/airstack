@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "host_provider_profiles",
+  "steps": [
+    { "type": "trace_event", "name": "suite_start", "fields": { "domain": "provider-profiles" } },
+    {
+      "type": "proc_spawn",
+      "cmd": "sh",
+      "args": [
+        "-lc",
+        "tmpdir=$(mktemp -d)\nmkdir -p \"$tmpdir/home\"\ncat > \"$tmpdir/airstack.toml\" <<'TOML'\n[project]\nname = \"provider-profiles\"\ndeploy_mode = \"remote\"\n\n[[infra.servers]]\nname = \"ch-1\"\nprovider = \"hetzner\"\nregion = \"nbg1\"\nserver_type = \"cpx11\"\nssh_key = \"~/.ssh/id_ed25519.pub\"\n\n[providers.profiles]\nfly = \"work\"\nTOML\n\nAIRSTACK_HOME=\"$tmpdir/home\" cargo run -p airstack-core -- --config \"$tmpdir/airstack.toml\" provider profile set fly work --env FLY_CONFIG_DIR=$tmpdir/flycfg >/dev/null\nAIRSTACK_HOME=\"$tmpdir/home\" cargo run -p airstack-core -- --config \"$tmpdir/airstack.toml\" provider profile status fly --json >\"$tmpdir/status.json\"\ngrep -q '\"results\"' \"$tmpdir/status.json\"\ngrep -q '\"scope\": \"config\"' \"$tmpdir/status.json\"\nAIRSTACK_HOME=\"$tmpdir/home\" cargo run -p airstack-core -- --config \"$tmpdir/airstack.toml\" provider inventory fly --all-profiles --json >\"$tmpdir/inventory.json\"\ngrep -q '\"scope\": \"inventory\"' \"$tmpdir/inventory.json\"\n"
+      ],
+      "expect_exit": 0
+    },
+    { "type": "assert_ok", "value": true, "msg": "provider profile status and inventory are scriptable in json" }
+  ]
+}

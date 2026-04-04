@@ -60,6 +60,7 @@ pub async fn run(
     bootstrap_runtime: bool,
     auto_fallback: bool,
     resolve_capacity: bool,
+    ensure_host_paths: bool,
 ) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut deploy_config = config.clone();
@@ -120,17 +121,42 @@ pub async fn run(
                 }
 
                 if dry_run {
-                    server_records.push(UpServerRecord {
-                        name: server.name.clone(),
-                        provider: server.provider.clone(),
-                        action: "plan-create".to_string(),
-                        id: None,
-                        public_ip: None,
-                    });
-                    output::line(format!(
-                        "Would create server {} ({}, {})",
-                        server.name, server.server_type, preflight.request.region
-                    ));
+                    let provider_config = HashMap::new();
+                    let metal_provider = get_metal_provider(&server.provider, provider_config)
+                        .with_context(|| {
+                            format!("Failed to initialize {} provider", server.provider)
+                        })?;
+                    let existing = metal_provider
+                        .list_servers()
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|s| s.name == server.name);
+                    if let Some(existing_server) = existing {
+                        server_records.push(UpServerRecord {
+                            name: existing_server.name.clone(),
+                            provider: server.provider.clone(),
+                            action: "plan-noop".to_string(),
+                            id: Some(existing_server.id.clone()),
+                            public_ip: existing_server.public_ip.clone(),
+                        });
+                        output::line(format!(
+                            "Would keep existing server {} ({})",
+                            existing_server.name, existing_server.id
+                        ));
+                    } else {
+                        server_records.push(UpServerRecord {
+                            name: server.name.clone(),
+                            provider: server.provider.clone(),
+                            action: "plan-create".to_string(),
+                            id: None,
+                            public_ip: None,
+                        });
+                        output::line(format!(
+                            "Would create server {} ({}, {})",
+                            server.name, server.server_type, preflight.request.region
+                        ));
+                    }
                     continue;
                 }
 
@@ -328,18 +354,22 @@ pub async fn run(
             let runtime_target =
                 resolve_target(&deploy_config, service, allow_local_deploy || force_local)?;
             let previous_image = existing_service_image(&runtime_target, &service_name).await?;
-            let deployed = match deploy_service(&runtime_target, &service_name, service).await {
-                Ok(v) => v,
-                Err(e) => {
-                    let diag = collect_container_diagnostics(&runtime_target, &service_name).await;
-                    return Err(e).with_context(|| {
-                        format!(
-                            "Failed to deploy service {}. diagnostics: {}",
-                            service_name, diag
-                        )
-                    });
-                }
-            };
+            let deployed =
+                match deploy_service(&runtime_target, &service_name, service, ensure_host_paths)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let diag =
+                            collect_container_diagnostics(&runtime_target, &service_name).await;
+                        return Err(e).with_context(|| {
+                            format!(
+                                "Failed to deploy service {}. diagnostics: {}",
+                                service_name, diag
+                            )
+                        });
+                    }
+                };
 
             if service.healthcheck.is_some() {
                 if let Err(err) = evaluate_service_health(

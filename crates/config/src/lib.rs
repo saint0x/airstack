@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,6 +9,7 @@ pub struct AirstackConfig {
     pub infra: Option<InfraConfig>,
     pub services: Option<HashMap<String, ServiceConfig>>,
     pub edge: Option<EdgeConfig>,
+    pub providers: Option<ProvidersConfig>,
     pub scripts: Option<HashMap<String, ScriptConfig>>,
     pub hooks: Option<HooksConfig>,
 }
@@ -95,6 +96,7 @@ pub struct TcpHealthcheckConfig {
 pub struct EdgeConfig {
     pub provider: String,
     pub sites: Vec<EdgeSiteConfig>,
+    pub extra_include_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,50 @@ pub struct EdgeSiteConfig {
     pub upstream_port: u16,
     pub tls_email: Option<String>,
     pub redirect_http: Option<bool>,
+    pub nearest: Option<EdgeNearestConfig>,
+    #[serde(default, rename = "static")]
+    pub static_routes: Vec<EdgeStaticRouteConfig>,
+    #[serde(default)]
+    pub routes: Vec<EdgeRouteConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeNearestConfig {
+    pub method: Option<String>,
+    pub header: Option<String>,
+    pub default_upstream: Option<String>,
+    #[serde(default)]
+    pub regions: Vec<EdgeNearestRegionConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeNearestRegionConfig {
+    pub name: String,
+    #[serde(default)]
+    pub countries: Vec<String>,
+    pub upstream: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeStaticRouteConfig {
+    pub path_prefix: String,
+    pub root: String,
+    pub browse: Option<bool>,
+    pub headers: Option<HashMap<String, String>>,
+    pub host_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeRouteConfig {
+    pub path_prefix: String,
+    pub upstream: Option<String>,
+    pub strip_prefix: Option<bool>,
+    pub headers: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvidersConfig {
+    pub profiles: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +300,115 @@ impl AirstackConfig {
                 if site.upstream_port == 0 {
                     anyhow::bail!("Edge upstream_port must be > 0");
                 }
+                if let Some(nearest) = &site.nearest {
+                    let method = nearest.method.as_deref().unwrap_or("geo-header");
+                    if method != "geo-header" {
+                        anyhow::bail!(
+                            "edge.sites.nearest.method must be 'geo-header' (got '{}')",
+                            method
+                        );
+                    }
+                    let header = nearest.header.as_deref().unwrap_or("CF-IPCountry");
+                    if header.trim().is_empty() {
+                        anyhow::bail!("edge.sites.nearest.header cannot be empty when set");
+                    }
+                    if nearest.regions.is_empty() {
+                        anyhow::bail!(
+                            "edge.sites.nearest.regions must contain at least one region"
+                        );
+                    }
+
+                    let mut seen_countries = HashSet::new();
+                    for region in &nearest.regions {
+                        if region.name.trim().is_empty() {
+                            anyhow::bail!("edge.sites.nearest.regions.name cannot be empty");
+                        }
+                        if region.upstream.trim().is_empty() {
+                            anyhow::bail!("edge.sites.nearest.regions.upstream cannot be empty");
+                        }
+                        if region.countries.is_empty() {
+                            anyhow::bail!(
+                                "edge.sites.nearest.regions.countries must contain at least one ISO country code"
+                            );
+                        }
+                        for country in &region.countries {
+                            let normalized = country.trim().to_ascii_uppercase();
+                            if normalized.len() != 2
+                                || !normalized.chars().all(|c| c.is_ascii_alphabetic())
+                            {
+                                anyhow::bail!(
+                                    "edge.sites.nearest.regions.countries entries must be ISO-3166 alpha-2 codes (got '{}')",
+                                    country
+                                );
+                            }
+                            if !seen_countries.insert(normalized.clone()) {
+                                anyhow::bail!(
+                                    "edge.sites.nearest has duplicate country code '{}' across regions",
+                                    normalized
+                                );
+                            }
+                        }
+                    }
+                    if nearest
+                        .default_upstream
+                        .as_ref()
+                        .is_some_and(|u| u.trim().is_empty())
+                    {
+                        anyhow::bail!(
+                            "edge.sites.nearest.default_upstream cannot be empty when set"
+                        );
+                    }
+                }
+                for route in &site.static_routes {
+                    if route.path_prefix.trim().is_empty() {
+                        anyhow::bail!("edge.sites.static path_prefix cannot be empty");
+                    }
+                    if route.root.trim().is_empty() {
+                        anyhow::bail!("edge.sites.static root cannot be empty");
+                    }
+                    if !route.path_prefix.starts_with('/') {
+                        anyhow::bail!(
+                            "edge.sites.static path_prefix must start with '/' (got '{}')",
+                            route.path_prefix
+                        );
+                    }
+                    if let Some(host_path) = &route.host_path {
+                        if host_path.trim().is_empty() || !host_path.starts_with('/') {
+                            anyhow::bail!(
+                                "edge.sites.static host_path must be an absolute path when set"
+                            );
+                        }
+                    }
+                }
+                for route in &site.routes {
+                    if route.path_prefix.trim().is_empty() {
+                        anyhow::bail!("edge.sites.routes path_prefix cannot be empty");
+                    }
+                    if !route.path_prefix.starts_with('/') {
+                        anyhow::bail!(
+                            "edge.sites.routes path_prefix must start with '/' (got '{}')",
+                            route.path_prefix
+                        );
+                    }
+                    if route.upstream.as_ref().is_some_and(|u| u.trim().is_empty()) {
+                        anyhow::bail!("edge.sites.routes upstream cannot be empty when set");
+                    }
+                }
+            }
+            if let Some(include) = &edge.extra_include_file {
+                if include.trim().is_empty() {
+                    anyhow::bail!("edge.extra_include_file cannot be empty when set");
+                }
+            }
+        }
+
+        if let Some(providers) = &self.providers {
+            if let Some(profile_pins) = &providers.profiles {
+                for (provider, profile) in profile_pins {
+                    if provider.trim().is_empty() || profile.trim().is_empty() {
+                        anyhow::bail!("providers.profiles entries require non-empty provider and profile names");
+                    }
+                }
             }
         }
 
@@ -357,6 +512,10 @@ impl AirstackConfig {
             self.edge = Some(edge);
         }
 
+        if let Some(providers) = overlay.providers {
+            self.providers = Some(providers);
+        }
+
         if let Some(scripts) = overlay.scripts {
             let base_scripts = self.scripts.get_or_insert_with(HashMap::new);
             for (name, script) in scripts {
@@ -408,6 +567,7 @@ volumes = ["./data:/var/lib/postgresql/data"]
 
 [edge]
 provider = "caddy"
+extra_include_file = "/opt/aria/Caddy.extra"
 
 [[edge.sites]]
 host = "api.example.com"
@@ -415,6 +575,19 @@ upstream_service = "api"
 upstream_port = 80
 tls_email = "ops@example.com"
 redirect_http = true
+
+[[edge.sites.static]]
+path_prefix = "/downloads"
+root = "/srv/downloads"
+browse = false
+
+[[edge.sites.routes]]
+path_prefix = "/internal"
+upstream = "api:8080"
+strip_prefix = true
+
+[providers.profiles]
+fly = "work"
 "#;
 
         std::fs::write(&path, example_config)
@@ -430,6 +603,7 @@ struct OverlayConfig {
     infra: Option<InfraConfig>,
     services: Option<HashMap<String, ServiceConfig>>,
     edge: Option<EdgeConfig>,
+    providers: Option<ProvidersConfig>,
     scripts: Option<HashMap<String, ScriptConfig>>,
     hooks: Option<HooksConfig>,
 }
@@ -487,6 +661,7 @@ mod tests {
                 },
             )])),
             edge: None,
+            providers: None,
             scripts: None,
             hooks: None,
         }
@@ -673,6 +848,149 @@ ssh_key = "~/.ssh/id_ed25519.pub"
         assert!(
             err.to_string()
                 .contains("protocol must be one of tcp|udp|icmp"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_edge_static_without_leading_slash() {
+        let mut cfg = base_config();
+        cfg.edge = Some(EdgeConfig {
+            provider: "caddy".to_string(),
+            extra_include_file: None,
+            sites: vec![EdgeSiteConfig {
+                host: "api.example.com".to_string(),
+                upstream_service: "api".to_string(),
+                upstream_port: 80,
+                tls_email: None,
+                redirect_http: Some(true),
+                nearest: None,
+                static_routes: vec![EdgeStaticRouteConfig {
+                    path_prefix: "downloads".to_string(),
+                    root: "/srv/downloads".to_string(),
+                    browse: Some(false),
+                    headers: None,
+                    host_path: Some("/srv/downloads".to_string()),
+                }],
+                routes: vec![],
+            }],
+        });
+
+        let err = cfg
+            .validate()
+            .expect_err("static path prefix must start with slash");
+        assert!(
+            err.to_string()
+                .contains("edge.sites.static path_prefix must start with '/'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_edge_static_non_absolute_host_path() {
+        let mut cfg = base_config();
+        cfg.edge = Some(EdgeConfig {
+            provider: "caddy".to_string(),
+            extra_include_file: None,
+            sites: vec![EdgeSiteConfig {
+                host: "api.example.com".to_string(),
+                upstream_service: "api".to_string(),
+                upstream_port: 80,
+                tls_email: None,
+                redirect_http: Some(true),
+                nearest: None,
+                static_routes: vec![EdgeStaticRouteConfig {
+                    path_prefix: "/downloads".to_string(),
+                    root: "/srv/downloads".to_string(),
+                    browse: Some(false),
+                    headers: None,
+                    host_path: Some("srv/downloads".to_string()),
+                }],
+                routes: vec![],
+            }],
+        });
+
+        let err = cfg
+            .validate()
+            .expect_err("static host_path must be absolute");
+        assert!(
+            err.to_string()
+                .contains("edge.sites.static host_path must be an absolute path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_geo_header_nearest_routing() {
+        let mut cfg = base_config();
+        cfg.edge = Some(EdgeConfig {
+            provider: "caddy".to_string(),
+            extra_include_file: None,
+            sites: vec![EdgeSiteConfig {
+                host: "backend.quilt.sh".to_string(),
+                upstream_service: "api_us".to_string(),
+                upstream_port: 8080,
+                tls_email: Some("ops@quilt.sh".to_string()),
+                redirect_http: Some(true),
+                nearest: Some(EdgeNearestConfig {
+                    method: Some("geo-header".to_string()),
+                    header: Some("CF-IPCountry".to_string()),
+                    default_upstream: Some("api_us:8080".to_string()),
+                    regions: vec![EdgeNearestRegionConfig {
+                        name: "eu".to_string(),
+                        countries: vec!["GB".to_string(), "DE".to_string(), "FR".to_string()],
+                        upstream: "api_eu:8080".to_string(),
+                    }],
+                }),
+                static_routes: vec![],
+                routes: vec![],
+            }],
+        });
+
+        cfg.validate()
+            .expect("valid geo-header nearest routing should pass");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_country_in_nearest_regions() {
+        let mut cfg = base_config();
+        cfg.edge = Some(EdgeConfig {
+            provider: "caddy".to_string(),
+            extra_include_file: None,
+            sites: vec![EdgeSiteConfig {
+                host: "backend.quilt.sh".to_string(),
+                upstream_service: "api_us".to_string(),
+                upstream_port: 8080,
+                tls_email: Some("ops@quilt.sh".to_string()),
+                redirect_http: Some(true),
+                nearest: Some(EdgeNearestConfig {
+                    method: Some("geo-header".to_string()),
+                    header: Some("CF-IPCountry".to_string()),
+                    default_upstream: Some("api_us:8080".to_string()),
+                    regions: vec![
+                        EdgeNearestRegionConfig {
+                            name: "eu".to_string(),
+                            countries: vec!["GB".to_string(), "DE".to_string()],
+                            upstream: "api_eu:8080".to_string(),
+                        },
+                        EdgeNearestRegionConfig {
+                            name: "na".to_string(),
+                            countries: vec!["US".to_string(), "DE".to_string()],
+                            upstream: "api_us:8080".to_string(),
+                        },
+                    ],
+                }),
+                static_routes: vec![],
+                routes: vec![],
+            }],
+        });
+
+        let err = cfg
+            .validate()
+            .expect_err("duplicate country across nearest regions must fail");
+        assert!(
+            err.to_string()
+                .contains("edge.sites.nearest has duplicate country code 'DE'"),
             "unexpected error: {err}"
         );
     }

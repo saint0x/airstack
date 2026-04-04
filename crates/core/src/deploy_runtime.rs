@@ -139,10 +139,11 @@ pub async fn deploy_service(
     target: &RuntimeTarget,
     name: &str,
     service: &ServiceConfig,
+    ensure_host_paths: bool,
 ) -> Result<RuntimeDeployResult> {
     preflight_image_access(target, &service.image).await?;
     preflight_runtime_abi(target, name, service).await?;
-    validate_remote_volumes(target, name, service).await?;
+    validate_remote_volumes(target, name, service, ensure_host_paths).await?;
 
     let mut run_parts = vec![
         "docker".to_string(),
@@ -271,16 +272,17 @@ pub async fn deploy_service_with_strategy(
     healthcheck: Option<&HealthcheckConfig>,
     strategy: DeployStrategy,
     canary_seconds: u64,
+    ensure_host_paths: bool,
 ) -> Result<RuntimeDeployResult> {
     match strategy {
-        DeployStrategy::Rolling => deploy_service(target, name, service).await,
+        DeployStrategy::Rolling => deploy_service(target, name, service, ensure_host_paths).await,
         DeployStrategy::BlueGreen | DeployStrategy::Canary => {
             // Candidate runs without host port bindings to avoid conflicts while validating the new image.
             let candidate_name = format!("{}__candidate", name);
             let mut candidate = service.clone();
             candidate.ports = Vec::new();
 
-            let _ = deploy_service(target, &candidate_name, &candidate).await?;
+            let _ = deploy_service(target, &candidate_name, &candidate, ensure_host_paths).await?;
 
             if let Some(hc) = healthcheck {
                 let mut health_service = service.clone();
@@ -319,7 +321,7 @@ pub async fn deploy_service_with_strategy(
                 sleep(Duration::from_secs(canary_seconds)).await;
             }
 
-            let promoted = match deploy_service(target, name, service).await {
+            let promoted = match deploy_service(target, name, service, ensure_host_paths).await {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = run_shell(
@@ -350,7 +352,7 @@ pub async fn rollback_service(
 ) -> Result<()> {
     let mut rollback_cfg = service.clone();
     rollback_cfg.image = previous_image.to_string();
-    let _ = deploy_service(target, name, &rollback_cfg).await?;
+    let _ = deploy_service(target, name, &rollback_cfg, false).await?;
     Ok(())
 }
 
@@ -644,6 +646,7 @@ async fn validate_remote_volumes(
     target: &RuntimeTarget,
     service_name: &str,
     service: &ServiceConfig,
+    ensure_host_paths: bool,
 ) -> Result<()> {
     let RuntimeTarget::Remote(_) = target else {
         return Ok(());
@@ -680,10 +683,30 @@ async fn validate_remote_volumes(
     }
 
     if !missing_paths.is_empty() {
+        if ensure_host_paths {
+            for path in &missing_paths {
+                let mkdir = run_shell(target, &format!("mkdir -p {}", shell_quote(path))).await?;
+                if !mkdir.status.success() {
+                    anyhow::bail!(
+                        "Remote volume preflight failed for service '{}': could not auto-create '{}'. Run `airstack ssh <server> --cmd \"mkdir -p {}\"` and retry.",
+                        service_name,
+                        path,
+                        path
+                    );
+                }
+            }
+            return Ok(());
+        }
+        let remediation = missing_paths
+            .iter()
+            .map(|p| format!("mkdir -p {}", shell_quote(p)))
+            .collect::<Vec<_>>()
+            .join(" && ");
         anyhow::bail!(
-            "Remote volume preflight failed for service '{}': missing remote source path(s): {}",
+            "Remote volume preflight failed for service '{}': missing remote source path(s): {}. Suggested fix: `airstack ssh <server> --cmd \"{}\"` or retry with `--ensure-host-paths`.",
             service_name,
-            missing_paths.join(", ")
+            missing_paths.join(", "),
+            remediation
         );
     }
     Ok(())

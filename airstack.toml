@@ -12,68 +12,71 @@ ssh_key = "~/.ssh/id_ed25519.pub"
 floating_ip = false
 
 [[infra.servers]]
-name = "remyy"
+name = "quilt-eu"
 provider = "hetzner"
 region = "ash"
-server_type = "cpx11"
+server_type = "cpx31"
 ssh_key = "~/.ssh/id_ed25519.pub"
 floating_ip = false
 
-[[infra.servers]]
-name = "synthesys-backend"
-provider = "fly"
-region = "ewr"
-server_type = "shared-cpu-1x"
-ssh_key = "~/.ssh/id_ed25519.pub"
-floating_ip = false
-
-[[infra.servers]]
-name = "flywatch"
-provider = "fly"
-region = "iad"
-server_type = "shared-cpu-1x"
-ssh_key = "~/.ssh/id_ed25519.pub"
-floating_ip = false
-
-[services.database]
+[services.database_eu]
 image = "postgres:15"
 ports = [5432]
 env = { POSTGRES_DB = "myapp", POSTGRES_USER = "user", POSTGRES_PASSWORD = "password" }
-volumes = ["./data/postgres:/var/lib/postgresql/data"]
+volumes = ["pgdata_eu:/var/lib/postgresql/data"]
 healthcheck = { command = ["sh", "-lc", "pg_isready -U user -d myapp"], interval_secs = 5, retries = 20, timeout_secs = 3 }
 target_server = "quilt"
 
-[services.redis]
+[services.redis_eu]
 image = "redis:7-alpine"
 ports = [6379]
 healthcheck = { command = ["redis-cli", "ping"], interval_secs = 5, retries = 20, timeout_secs = 3 }
 target_server = "quilt"
 
-[services.api]
-image = "myapp/api:latest"
-ports = [3000]
-depends_on = ["database", "redis"]
-env = { DATABASE_URL = "postgres://user:password@database:5432/myapp", REDIS_URL = "redis://redis:6379", NODE_ENV = "production" }
-healthcheck = { command = ["sh", "-lc", "wget -qO- http://127.0.0.1:3000/health >/dev/null"], interval_secs = 5, retries = 20, timeout_secs = 3 }
+[services.api_eu]
+image = "mendhak/http-https-echo:35"
+ports = [18080]
+env = { HTTP_PORT = "18080", HTTPS_PORT = "18443" }
+healthcheck = { command = ["sh", "-lc", "wget -qO- http://127.0.0.1:18080 >/dev/null"], interval_secs = 5, retries = 20, timeout_secs = 3 }
 target_server = "quilt"
 
-[services.nginx]
-image = "nginx:alpine"
-ports = [80, 443]
-depends_on = ["api"]
-volumes = [
-  "./nginx.conf:/etc/nginx/nginx.conf",
-  "./ssl:/etc/ssl/certs"
-]
-healthcheck = { command = ["sh", "-lc", "wget -qO- http://127.0.0.1:80 >/dev/null"], interval_secs = 5, retries = 20, timeout_secs = 3 }
-target_server = "quilt"
+[services.database_us]
+image = "postgres:15"
+ports = [5432]
+env = { POSTGRES_DB = "myapp", POSTGRES_USER = "user", POSTGRES_PASSWORD = "password" }
+volumes = ["pgdata_us:/var/lib/postgresql/data"]
+healthcheck = { command = ["sh", "-lc", "pg_isready -U user -d myapp"], interval_secs = 5, retries = 20, timeout_secs = 3 }
+target_server = "quilt-eu"
+
+[services.redis_us]
+image = "redis:7-alpine"
+ports = [6379]
+healthcheck = { command = ["redis-cli", "ping"], interval_secs = 5, retries = 20, timeout_secs = 3 }
+target_server = "quilt-eu"
+
+[services.api_us]
+image = "mendhak/http-https-echo:35"
+ports = [18080]
+env = { HTTP_PORT = "18080", HTTPS_PORT = "18443" }
+healthcheck = { command = ["sh", "-lc", "wget -qO- http://127.0.0.1:18080 >/dev/null"], interval_secs = 5, retries = 20, timeout_secs = 3 }
+target_server = "quilt-eu"
 
 [edge]
 provider = "caddy"
 
 [[edge.sites]]
-host = "api.example.com"
-upstream_service = "nginx"
-upstream_port = 80
-tls_email = "ops@example.com"
+host = "backend.quilt.sh"
+upstream_service = "api_eu"
+upstream_port = 18080
+tls_email = "ops@quilt.sh"
 redirect_http = true
+
+[edge.sites.nearest]
+method = "geo-header"
+header = "CF-IPCountry"
+default_upstream = "127.0.0.1:8080"
+
+[[edge.sites.nearest.regions]]
+name = "eu"
+countries = ["GB", "IE", "DE", "FR", "NL", "ES", "IT", "SE", "NO", "DK", "FI", "PL"]
+upstream = "178.156.177.41:8080"

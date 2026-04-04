@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderProfileStore {
@@ -17,6 +18,17 @@ pub struct ProviderProfile {
     pub env: BTreeMap<String, String>,
     pub description: Option<String>,
     pub updated_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileIdentity {
+    pub provider: String,
+    pub profile: String,
+    pub account: Option<String>,
+    pub organization: Option<String>,
+    pub raw: Option<serde_json::Value>,
+    pub auth_ok: bool,
+    pub note: Option<String>,
 }
 
 pub fn apply_profiles_for_run(explicit: Option<&str>) -> Result<()> {
@@ -145,6 +157,11 @@ pub fn list_provider_profiles(provider: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
+pub fn active_profile(provider: &str) -> Result<Option<String>> {
+    let store = load_store()?;
+    Ok(store.active.get(provider).cloned())
+}
+
 pub fn store_snapshot_dir(provider: &str, name: &str) -> Result<PathBuf> {
     let root = store_root()?;
     Ok(root
@@ -164,6 +181,84 @@ pub fn apply_profile_env(store: &ProviderProfileStore, provider: &str, name: &st
         std::env::set_var(key, value);
     }
     Ok(())
+}
+
+pub fn resolve_profile_identity(
+    store: &ProviderProfileStore,
+    provider: &str,
+    name: &str,
+) -> ProfileIdentity {
+    if apply_profile_env(store, provider, name).is_err() {
+        return ProfileIdentity {
+            provider: provider.to_string(),
+            profile: name.to_string(),
+            account: None,
+            organization: None,
+            raw: None,
+            auth_ok: false,
+            note: Some("profile env could not be applied".to_string()),
+        };
+    }
+
+    if provider == "fly" {
+        let out = Command::new("sh")
+            .arg("-lc")
+            .arg("flyctl auth whoami --json")
+            .output();
+        match out {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let parsed: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+                let account = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("email"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let organization = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("organization"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                ProfileIdentity {
+                    provider: provider.to_string(),
+                    profile: name.to_string(),
+                    account,
+                    organization,
+                    raw: parsed,
+                    auth_ok: true,
+                    note: None,
+                }
+            }
+            Ok(output) => ProfileIdentity {
+                provider: provider.to_string(),
+                profile: name.to_string(),
+                account: None,
+                organization: None,
+                raw: None,
+                auth_ok: false,
+                note: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+            },
+            Err(err) => ProfileIdentity {
+                provider: provider.to_string(),
+                profile: name.to_string(),
+                account: None,
+                organization: None,
+                raw: None,
+                auth_ok: false,
+                note: Some(err.to_string()),
+            },
+        }
+    } else {
+        ProfileIdentity {
+            provider: provider.to_string(),
+            profile: name.to_string(),
+            account: None,
+            organization: None,
+            raw: None,
+            auth_ok: true,
+            note: Some("identity resolver not implemented for provider".to_string()),
+        }
+    }
 }
 
 pub fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {

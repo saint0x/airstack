@@ -29,6 +29,7 @@ pub async fn run(config_path: &str, args: ReconcileArgs) -> Result<()> {
             None,
             "rolling".to_string(),
             45,
+            false,
         )
         .await?;
     } else {
@@ -38,6 +39,7 @@ pub async fn run(config_path: &str, args: ReconcileArgs) -> Result<()> {
             None,
             args.dry_run,
             args.allow_local_deploy,
+            false,
             false,
             false,
             false,

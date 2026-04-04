@@ -29,3 +29,4 @@ pub mod tui;
 #[path = "tui_stub.rs"]
 pub mod tui;
 pub mod up;
+pub mod upload;

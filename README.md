@@ -74,8 +74,12 @@ airstack deploy all
 # Scale a service
 airstack scale app 3
 
-# Check status
+# Check status (works from project root or any subdirectory)
 airstack status
+
+# Aggregate status for all discovered stacks from anywhere
+# (uses AIRSTACK_REPO + Desktop discovery when no local config is found)
+AIRSTACK_REPO=~/Desktop airstack status
 ```
 
 AirStack also loads a global env file (first match):
@@ -91,21 +95,23 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | Command | Description |
 |---------|-------------|
 | `airstack init [name] [--provider hetzner|fly] [--preset clickhouse]` | Initialize a project with provider/service presets |
-| `airstack up [--local] [--bootstrap-runtime] [--auto-fallback] [--resolve-capacity]` | Provision infrastructure (or explicit local mode) with optional runtime bootstrap |
+| `airstack up [--local] [--bootstrap-runtime] [--auto-fallback] [--resolve-capacity] [--ensure-host-paths]` | Provision infrastructure (or explicit local mode) with optional runtime bootstrap |
 | `airstack destroy` | Destroy infrastructure |
-| `airstack deploy &lt;service&gt; [--latest-code --push] [--tag <tag>] [--strategy rolling\|bluegreen\|canary]` | Deploy a service (`--latest-code` auto-falls back to remote build in remote deploy mode when local Docker is unavailable) |
+| `airstack deploy &lt;service&gt; [--latest-code --push] [--tag <tag>] [--strategy rolling\|bluegreen\|canary] [--ensure-host-paths]` | Deploy a service (`--latest-code` auto-falls back to remote build in remote deploy mode when local Docker is unavailable) |
 | `airstack cexec &lt;server&gt; &lt;container&gt; [--cmd "<shell>"] [--script <path>] [-- <argv...>]` | Execute inside a remote container (shell, script, or raw argv mode) |
 | `airstack scale &lt;service&gt; &lt;replicas&gt;` | Scale service replicas |
 | `airstack cli` | Launch lightweight interactive menu CLI |
 | `airstack tui [--view <name>]` | Launch FrankenTUI interface |
 | `airstack script <list|plan|run>` | Run remote lifecycle scripts defined in config |
-| `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode (includes deploy provenance fields in JSON) |
+| `airstack status [--source auto|provider|ssh|control-plane]` | Show status with source-of-truth mode (includes deploy provenance fields in JSON). If no local config is resolved, auto-discovers and aggregates all stack statuses. |
 | `airstack ssh &lt;server&gt; [--cmd "<shell>"] [--script <path>] [-- <argv...>]` | SSH into a server (shell, script, or raw argv mode) |
 | `airstack logs &lt;service&gt;` | Show service logs |
 | `airstack plan [--auto-fallback] [--resolve-capacity]` | Preview create/update/destroy and deploy actions with infra compatibility preflight |
-| `airstack apply` | Apply desired infrastructure and services |
+| `airstack apply [--ensure-host-paths]` | Apply desired infrastructure and services |
 | `airstack edge &lt;plan|apply|validate|status&gt;` | Reverse-proxy workflows |
 | `airstack edge diagnose` | TLS/ACME diagnosis with remediation hints |
+| `airstack upload &lt;server&gt; &lt;src&gt; &lt;dest&gt; [--checksum <sha256>]` | Upload artifact with checksum verification and atomic move |
+| `airstack cp &lt;server&gt; &lt;src&gt; &lt;dest&gt; [--checksum <sha256>]` | Alias for `airstack upload` |
 | `airstack doctor` | Validate production safety and policy checks |
 | `airstack drift` | Detect config image tag vs running image drift |
 | `airstack registry doctor [--server <name>] --image <image>` | Verify remote registry pull credentials/scope |
@@ -115,6 +121,7 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 | `airstack secrets &lt;set|get|list|delete&gt;` | Encrypted local secrets management |
 | `airstack backup &lt;enable|status|restore&gt;` | Managed backup lifecycle |
 | `airstack provider profile <list|show|set|use|remove|snapshot|status>` | First-class provider profile management (Fly and any provider/custom env context) |
+| `airstack provider inventory <provider> [--profile <name> ... | --all-profiles]` | Provider resource inventory by profile (for Fly: apps/machines/account metadata) |
 | `airstack release &lt;service&gt; [--push] [--update-config] [--remote-build <server>] [--from build\|push]` | Build/publish release images with structured phase output and phase resume |
 | `airstack ship &lt;service&gt; [--push --update-config] [--strategy rolling\|bluegreen\|canary]` | Atomic release+deploy with rollback on deploy failure |
 
@@ -126,23 +133,32 @@ This lets you keep provider keys in one AirStack-local place instead of per-proj
 - `--allow-local-deploy`: bypass remote-first deploy guard when infra exists
 - `up --local`: explicit local verification mode (skips infra provisioning)
 - `up --bootstrap-runtime`: install Docker on remote hosts before service deploy
+- `--ensure-host-paths`: auto-create missing remote bind-mount host paths during deploy preflight
 - `--provider-profile <provider>:<profile>`: override provider profile for current command
 
 ### Provider Profiles
 
 Profiles are persisted in `~/.airstack/provider_profiles.json` and can inject provider-specific env vars per run.
+Optional repo-level pinning is supported:
+
+```toml
+[providers.profiles]
+fly = "work"
+```
+
+Mutating commands (`up`, `deploy`, `destroy`, `apply`, `ship`) print provider profile/account preflight context and require confirmation unless `-y` is passed.
 
 ```bash
 # Snapshot current Fly config as work profile and activate it
 airstack provider profile snapshot fly work \
   --source ~/.fly \
-  --config-env FLY_CONFIG_DIR \
+  --config-env FLYCTL_CONFIG_DIR \
   --activate
 
 # After re-authenticating Fly to personal account, snapshot again
 airstack provider profile snapshot fly personal \
   --source ~/.fly \
-  --config-env FLY_CONFIG_DIR
+  --config-env FLYCTL_CONFIG_DIR
 
 # Switch active Fly profile
 airstack provider profile use fly personal
@@ -152,6 +168,12 @@ airstack --provider-profile fly:work status --source provider
 
 # Compare status across all Fly profiles
 airstack provider profile status fly --detailed
+
+# Scriptable status payload across profiles
+airstack provider profile status fly --json
+
+# Provider-native inventory (decoupled from current project targets)
+airstack provider inventory fly --all-profiles --json
 ```
 
 ### Fozzy Gate
@@ -289,6 +311,7 @@ env = { API_URL = "http://api:3000" }
 
 [edge]
 provider = "caddy"
+extra_include_file = "/opt/aria/Caddy.extra"
 
 [[edge.sites]]
 host = "api.example.com"
@@ -296,6 +319,31 @@ upstream_service = "frontend"
 upstream_port = 80
 tls_email = "ops@example.com"
 redirect_http = true
+
+[[edge.sites.static]]
+path_prefix = "/downloads"
+root = "/srv/downloads"
+browse = false
+host_path = "/srv/downloads"
+headers = { Cache-Control = "public, max-age=300" }
+
+[[edge.sites.routes]]
+path_prefix = "/internal"
+upstream = "frontend:8081"
+strip_prefix = true
+headers = { X-Edge-Route = "internal" }
+
+# Single production method for nearest-region routing:
+# geo-header steering (for example CF-IPCountry from a trusted edge)
+[edge.sites.nearest]
+method = "geo-header"
+header = "CF-IPCountry"
+default_upstream = "api_us:8080"
+
+[[edge.sites.nearest.regions]]
+name = "eu"
+countries = ["GB", "IE", "DE", "FR", "NL", "ES", "IT", "SE", "NO", "DK", "FI", "PL"]
+upstream = "api_eu:8080"
 
 [scripts.bootstrap]
 target = "all"
@@ -315,6 +363,67 @@ post_deploy = ["migrate"]
 ```
 
 Remote deploy note: bind-mount sources for remote services must be absolute paths on the remote host (for example `/opt/airstack/data:/var/lib/postgresql/data`). Relative/local paths are rejected during deploy preflight.
+If host paths are missing, Airstack now prints a ready-to-run remediation command and you can retry with `--ensure-host-paths` to auto-create them.
+
+## Common Recipes
+
+### Static DMG downloads behind Caddy
+
+```toml
+[edge]
+provider = "caddy"
+extra_include_file = "/opt/aria/Caddy.extra"
+
+[[edge.sites]]
+host = "downloads.example.com"
+upstream_service = "frontend"
+upstream_port = 80
+tls_email = "ops@example.com"
+
+[[edge.sites.static]]
+path_prefix = "/downloads"
+root = "/srv/downloads"
+browse = false
+host_path = "/srv/downloads"
+headers = { Cache-Control = "public, max-age=300" }
+```
+
+```bash
+airstack upload edge-1 ./dist/MyApp-1.2.3.dmg /srv/downloads/MyApp-1.2.3.dmg
+airstack upload edge-1 ./dist/MyApp-1.2.3.dmg.sha256 /srv/downloads/MyApp-1.2.3.dmg.sha256
+airstack ssh edge-1 --cmd "ln -sfn /srv/downloads/MyApp-1.2.3.dmg /srv/downloads/MyApp-latest.dmg"
+airstack edge apply
+```
+
+### Stable custom Caddy rules that survive edge apply
+
+Put custom directives in the configured include file (for example `/opt/aria/Caddy.extra`).
+Airstack writes the generated Caddyfile and imports this file without overwriting it.
+
+### Inspect edge source-of-truth and drift
+
+```bash
+airstack edge status
+```
+
+`edge status` now reports:
+- managed Caddyfile path(s)
+- generated-file overwrite warning
+- include file path (when configured)
+- rendered-vs-live config diff preview
+
+### Nearest-region routing (single supported method)
+
+Airstack supports one native nearest-routing method for Caddy edge: `geo-header`.
+Use `[edge.sites.nearest]` with `method = "geo-header"` and provide region country maps.
+
+- `header`: trusted country header name (default: `CF-IPCountry`)
+- `regions[].countries`: ISO-3166 alpha-2 country codes
+- `regions[].upstream`: upstream target (`service:port`)
+- `default_upstream`: fallback upstream when no region matches
+
+All requests for the site are steered through this map after explicit static/path routes.
+This keeps one deterministic routing surface for all backend endpoints.
 
 ## Development
 

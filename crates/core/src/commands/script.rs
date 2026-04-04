@@ -502,6 +502,7 @@ mod tests {
             }),
             services: None,
             edge: None,
+            providers: None,
             scripts: None,
             hooks: None,
         }

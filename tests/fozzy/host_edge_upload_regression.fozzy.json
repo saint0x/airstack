@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "name": "host_edge_upload_regression",
+  "steps": [
+    { "type": "trace_event", "name": "suite_start", "fields": { "domain": "edge-upload-regression" } },
+    {
+      "type": "proc_spawn",
+      "cmd": "sh",
+      "args": [
+        "-lc",
+        "tmpdir=$(mktemp -d)\ncat > \"$tmpdir/airstack.toml\" <<'TOML'\n[project]\nname = \"regression\"\ndeploy_mode = \"remote\"\n\n[[infra.servers]]\nname = \"edge-1\"\nprovider = \"hetzner\"\nregion = \"nbg1\"\nserver_type = \"cpx11\"\nssh_key = \"~/.ssh/id_ed25519.pub\"\n\n[services.frontend]\nimage = \"nginx:latest\"\nports = [80]\n\n[edge]\nprovider = \"caddy\"\nextra_include_file = \"/opt/aria/Caddy.extra\"\n\n[[edge.sites]]\nhost = \"downloads.example.com\"\nupstream_service = \"frontend\"\nupstream_port = 80\ntls_email = \"ops@example.com\"\nredirect_http = true\n\n[[edge.sites.static]]\npath_prefix = \"/downloads\"\nroot = \"/srv/downloads\"\nbrowse = false\nhost_path = \"/srv/downloads\"\nheaders = { Cache-Control = \"public, max-age=300\" }\n\n[[edge.sites.routes]]\npath_prefix = \"/internal\"\nupstream = \"frontend:8081\"\nstrip_prefix = true\nheaders = { X-Edge-Route = \"internal\" }\nTOML\n\ncargo run -p airstack-core -- --config \"$tmpdir/airstack.toml\" edge plan >\"$tmpdir/edge_plan.out\"\ngrep -q \"import /opt/aria/Caddy.extra\" \"$tmpdir/edge_plan.out\"\ngrep -q \"handle @static_0\" \"$tmpdir/edge_plan.out\"\ngrep -q \"reverse_proxy frontend:8081\" \"$tmpdir/edge_plan.out\"\ngrep -q \"reverse_proxy frontend:80\" \"$tmpdir/edge_plan.out\"\n"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "sh",
+      "args": [
+        "-lc",
+        "tmpdir=$(mktemp -d)\ncat > \"$tmpdir/airstack.toml\" <<'TOML'\n[project]\nname = \"upload-regression\"\ndeploy_mode = \"remote\"\n\n[[infra.servers]]\nname = \"edge-1\"\nprovider = \"hetzner\"\nregion = \"nbg1\"\nserver_type = \"cpx11\"\nssh_key = \"~/.ssh/id_ed25519.pub\"\nTOML\n\nset +e\ncargo run -p airstack-core -- --config \"$tmpdir/airstack.toml\" upload edge-1 \"$tmpdir/does-not-exist.dmg\" /srv/downloads/app.dmg >\"$tmpdir/stdout.log\" 2>\"$tmpdir/stderr.log\"\ncode=$?\nset -e\ntest \"$code\" -ne 0\ngrep -q \"Source file not found\" \"$tmpdir/stderr.log\"\n"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["run", "-p", "airstack-core", "--", "deploy", "--help"],
+      "expect_exit": 0
+    },
+    { "type": "assert_ok", "value": true, "msg": "edge include/static rendering and upload validation paths are covered" }
+  ]
+}
