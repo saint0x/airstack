@@ -4,6 +4,7 @@ use crate::deploy_runtime::{
     collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
     existing_service_image, resolve_target, rollback_service, DeployStrategy,
 };
+use crate::env_resolver::resolve_service_env;
 use crate::output;
 use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
@@ -61,7 +62,7 @@ struct ShipOutput {
     rolled_back: bool,
 }
 
-pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
+pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
     let services = config
@@ -71,6 +72,10 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
     let service_cfg = services
         .get(&args.service)
         .with_context(|| format!("Service '{}' not found", args.service))?;
+    let service_cfg =
+        resolve_service_env(&config.project.name, &args.service, service_cfg).with_context(|| {
+            format!("Failed to resolve service env for '{}'", args.service)
+        })?;
 
     let base_image = service_cfg
         .image
@@ -79,6 +84,48 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
         .unwrap_or(&service_cfg.image);
     let tag = args.tag.clone().unwrap_or(git_sha()?);
     let final_image = format!("{}:{}", base_image, tag);
+
+    if dry_run {
+        let _ = resolve_target(&config, &service_cfg, args.allow_local_deploy)?;
+        output::line(format!("🧪 dry-run: would build '{}'", final_image));
+        if args.push {
+            output::line(format!("🧪 dry-run: would push '{}'", final_image));
+        }
+        output::line(format!(
+            "🧪 dry-run: would deploy service '{}' with strategy {}",
+            args.service, args.strategy
+        ));
+        if service_cfg.healthcheck.is_some() {
+            output::line(format!(
+                "🧪 dry-run: would evaluate healthcheck for '{}'",
+                args.service
+            ));
+        }
+        if args.update_config {
+            output::line(format!(
+                "🧪 dry-run: would update config image for service '{}'",
+                args.service
+            ));
+        }
+        if args.service == "caddy" && config.edge.is_some() {
+            output::line("🧪 dry-run: would reconcile edge config during caddy ship");
+        }
+        if output::is_json() {
+            output::emit_json(&serde_json::json!({
+                "service": args.service,
+                "image": final_image,
+                "pushed": args.push,
+                "deployed": false,
+                "running": false,
+                "healthy": serde_json::Value::Null,
+                "rolled_back": false,
+                "dry_run": true,
+            }))?;
+        } else {
+            output::line("🧪 dry-run complete; no build, push, deploy, rollback, config, edge, or state changes were performed.");
+        }
+        return Ok(());
+    }
 
     // Build + push phase
     release::preflight_local_docker_available()?;
@@ -89,7 +136,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
 
     // Deploy phase
     let strategy = DeployStrategy::parse(&args.strategy)?;
-    let target = resolve_target(&config, service_cfg, args.allow_local_deploy)?;
+    let target = resolve_target(&config, &service_cfg, args.allow_local_deploy)?;
     let previous_image = existing_service_image(&target, &args.service).await?;
     let mut deploy_cfg = service_cfg.clone();
     deploy_cfg.image = final_image.clone();
@@ -109,7 +156,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
 
     if service_cfg.healthcheck.is_some() {
         if let Err(err) =
-            evaluate_service_health(&target, &args.service, service_cfg, false, 1, false)
+            evaluate_service_health(&target, &args.service, &service_cfg, false, 1, false)
                 .await
                 .and_then(|eval| {
                     if eval.ok {
@@ -122,7 +169,7 @@ pub async fn run(config_path: &str, args: ShipArgs) -> Result<()> {
             deployed.healthy = Some(false);
             let diag = collect_container_diagnostics(&target, &args.service).await;
             if let Some(prev) = &previous_image {
-                let _ = rollback_service(&target, &args.service, prev, service_cfg).await;
+                let _ = rollback_service(&target, &args.service, prev, &service_cfg).await;
                 rolled_back = true;
                 output::line(format!(
                     "↩️ rollback target for {} -> image {}",

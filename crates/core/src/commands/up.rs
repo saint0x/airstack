@@ -16,6 +16,7 @@ use crate::deploy_runtime::{
     collect_container_diagnostics, deploy_service, evaluate_service_health, existing_service_image,
     resolve_target, rollback_service,
 };
+use crate::env_resolver::resolve_service_env;
 use crate::infra_preflight::{
     check_ssh_key_path, format_validation_error, is_permanent_provider_error,
     resolve_server_request,
@@ -337,6 +338,10 @@ pub async fn run(
             let service = services.get(&service_name).with_context(|| {
                 format!("Service '{}' not found in configuration", service_name)
             })?;
+            let service =
+                resolve_service_env(&config.project.name, &service_name, service).with_context(
+                    || format!("Failed to resolve service env for '{}'", service_name),
+                )?;
 
             if dry_run {
                 output::line(format!(
@@ -352,10 +357,10 @@ pub async fn run(
             }
 
             let runtime_target =
-                resolve_target(&deploy_config, service, allow_local_deploy || force_local)?;
+                resolve_target(&deploy_config, &service, allow_local_deploy || force_local)?;
             let previous_image = existing_service_image(&runtime_target, &service_name).await?;
             let deployed =
-                match deploy_service(&runtime_target, &service_name, service, ensure_host_paths)
+                match deploy_service(&runtime_target, &service_name, &service, ensure_host_paths)
                     .await
                 {
                     Ok(v) => v,
@@ -375,7 +380,7 @@ pub async fn run(
                 if let Err(err) = evaluate_service_health(
                     &runtime_target,
                     &service_name,
-                    service,
+                    &service,
                     false,
                     1,
                     false,
@@ -390,8 +395,8 @@ pub async fn run(
                 }) {
                     let diag = collect_container_diagnostics(&runtime_target, &service_name).await;
                     if let Some(prev) = &previous_image {
-                        let _ =
-                            rollback_service(&runtime_target, &service_name, prev, service).await;
+                        let _ = rollback_service(&runtime_target, &service_name, prev, &service)
+                            .await;
                         output::line(format!(
                             "↩️ rollback target for {} -> image {}",
                             service_name, prev

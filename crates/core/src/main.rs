@@ -12,6 +12,7 @@ mod commands;
 mod dependencies;
 mod deploy_runtime;
 mod env_loader;
+mod env_resolver;
 mod infra_preflight;
 mod output;
 mod provider_profiles;
@@ -457,6 +458,7 @@ async fn main() -> Result<()> {
                 &config_path,
                 &service,
                 target,
+                cli.dry_run,
                 cli.allow_local_deploy,
                 latest_code,
                 push,
@@ -564,10 +566,10 @@ async fn main() -> Result<()> {
         Commands::Secrets { command } => commands::secrets::run(&config_path, command).await,
         Commands::Backup { command } => commands::backup::run(&config_path, command).await,
         Commands::Provider { command } => commands::provider::run(&config_path, command).await,
-        Commands::Release(args) => commands::release::run(&config_path, args).await,
+        Commands::Release(args) => commands::release::run(&config_path, args, cli.dry_run).await,
         Commands::Ship(mut args) => {
             args.allow_local_deploy = cli.allow_local_deploy;
-            commands::ship::run(&config_path, args).await
+            commands::ship::run(&config_path, args, cli.dry_run).await
         }
         Commands::Build { mode, service } => {
             let migration = match (mode.as_deref(), service.as_deref()) {

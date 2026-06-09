@@ -23,6 +23,7 @@ pub async fn run(config_path: &str, args: ReconcileArgs) -> Result<()> {
             config_path,
             "all",
             None,
+            args.dry_run,
             args.allow_local_deploy,
             false,
             false,

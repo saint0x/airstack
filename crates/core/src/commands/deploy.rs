@@ -5,6 +5,7 @@ use crate::deploy_runtime::{
     collect_container_diagnostics, deploy_service_with_strategy, evaluate_service_health,
     existing_service_image, resolve_target, rollback_service, DeployStrategy,
 };
+use crate::env_resolver::resolve_service_env;
 use crate::output;
 use crate::state::{HealthState, LocalState, ServiceState};
 use airstack_config::AirstackConfig;
@@ -31,6 +32,7 @@ struct DeployRecord {
 struct DeployOutput {
     requested: String,
     order: Vec<String>,
+    dry_run: bool,
     deployed: Vec<DeployRecord>,
 }
 
@@ -38,6 +40,7 @@ pub async fn run(
     config_path: &str,
     service_name: &str,
     _target: Option<String>,
+    dry_run: bool,
     allow_local_deploy: bool,
     latest_code: bool,
     push: bool,
@@ -87,50 +90,79 @@ pub async fn run(
                         .and_then(|i| i.servers.first().map(|s| s.name.clone()))
                 })
                 .context("Remote deploy mode selected but no infra server was found for --latest-code fallback")?;
-            output::line(format!(
-                "ℹ️ local Docker unavailable; using remote build fallback on '{}'",
-                remote_server
-            ));
-            let server = release::resolve_remote_build_server(&config, &remote_server)?;
-            release::run_remote_build(server, &remote_server, &built_image).await?;
+            if dry_run {
+                output::line(format!(
+                    "🧪 dry-run: would use remote build fallback on '{}' for '{}'",
+                    remote_server, built_image
+                ));
+                if push {
+                    output::line(format!(
+                        "🧪 dry-run: would push '{}' from remote builder '{}'",
+                        built_image, remote_server
+                    ));
+                }
+                if !push && !deploy_target_matches_build_server(svc, &config, &remote_server) {
+                    anyhow::bail!(
+                        "Local Docker daemon unavailable and remote build would run on '{}', but deploy target differs. Use --push so the deploy target can pull the built image.",
+                        remote_server
+                    );
+                }
+            } else {
+                output::line(format!(
+                    "ℹ️ local Docker unavailable; using remote build fallback on '{}'",
+                    remote_server
+                ));
+                let server = release::resolve_remote_build_server(&config, &remote_server)?;
+                release::run_remote_build(server, &remote_server, &built_image).await?;
 
-            if push {
-                release::preflight_remote_push_requirements(server, &built_image).await?;
-                match release::run_remote_push(server, &built_image).await {
-                    Ok(()) => {
-                        output::line("✅ remote build push completed");
-                    }
-                    Err(push_failure) => {
-                        if deploy_target_matches_build_server(svc, &config, &remote_server) {
-                            output::line(format!(
-                                "⚠️ remote push failed, but image '{}' exists on deploy target '{}'; continuing with direct remote deploy. registry={} error={}",
-                                built_image,
-                                remote_server,
-                                push_failure.registry,
-                                push_failure.last_error
-                            ));
-                        } else {
-                            anyhow::bail!(
-                                "Remote build succeeded on '{}', but push failed for '{}'. registry={} error={}. The deploy target is different, so registry availability is still required.",
-                                remote_server,
-                                built_image,
-                                push_failure.registry,
-                                push_failure.last_error
-                            );
+                if push {
+                    release::preflight_remote_push_requirements(server, &built_image).await?;
+                    match release::run_remote_push(server, &built_image).await {
+                        Ok(()) => {
+                            output::line("✅ remote build push completed");
+                        }
+                        Err(push_failure) => {
+                            if deploy_target_matches_build_server(svc, &config, &remote_server) {
+                                output::line(format!(
+                                    "⚠️ remote push failed, but image '{}' exists on deploy target '{}'; continuing with direct remote deploy. registry={} error={}",
+                                    built_image,
+                                    remote_server,
+                                    push_failure.registry,
+                                    push_failure.last_error
+                                ));
+                            } else {
+                                anyhow::bail!(
+                                    "Remote build succeeded on '{}', but push failed for '{}'. registry={} error={}. The deploy target is different, so registry availability is still required.",
+                                    remote_server,
+                                    built_image,
+                                    push_failure.registry,
+                                    push_failure.last_error
+                                );
+                            }
                         }
                     }
+                } else if !deploy_target_matches_build_server(svc, &config, &remote_server) {
+                    anyhow::bail!(
+                        "Local Docker daemon unavailable and remote build ran on '{}', but deploy target differs. Use --push so the deploy target can pull the built image.",
+                        remote_server
+                    );
                 }
-            } else if !deploy_target_matches_build_server(svc, &config, &remote_server) {
-                anyhow::bail!(
-                    "Local Docker daemon unavailable and remote build ran on '{}', but deploy target differs. Use --push so the deploy target can pull the built image.",
-                    remote_server
-                );
             }
         } else {
-            release::preflight_local_docker_available()?;
-            run_cmd("docker", &["build", "-t", &built_image, "."])?;
-            if push {
-                run_cmd("docker", &["push", &built_image])?;
+            if dry_run {
+                output::line(format!(
+                    "🧪 dry-run: would build local image '{}'",
+                    built_image
+                ));
+                if push {
+                    output::line(format!("🧪 dry-run: would push '{}'", built_image));
+                }
+            } else {
+                release::preflight_local_docker_available()?;
+                run_cmd("docker", &["build", "-t", &built_image, "."])?;
+                if push {
+                    run_cmd("docker", &["push", &built_image])?;
+                }
             }
         }
         image_overrides.insert(service_name.to_string(), built_image);
@@ -160,6 +192,11 @@ pub async fn run(
             service_override.image = image.clone();
             service = &service_override;
         }
+        let resolved_service =
+            resolve_service_env(&config.project.name, deploy_name, service).with_context(|| {
+                format!("Failed to resolve service env for '{}'", deploy_name)
+            })?;
+        let service = &resolved_service;
 
         output::line(format!(
             "   {} -> {} (ports: {:?})",
@@ -167,6 +204,40 @@ pub async fn run(
         ));
 
         let runtime_target = resolve_target(&config, service, allow_local_deploy)?;
+
+        if dry_run {
+            output::line(format!(
+                "🧪 dry-run: would deploy service {} using strategy {}",
+                deploy_name,
+                format!("{:?}", strategy).to_ascii_lowercase()
+            ));
+            if service.healthcheck.is_some() {
+                output::line(format!(
+                    "🧪 dry-run: would evaluate healthcheck for {} after deploy",
+                    deploy_name
+                ));
+            }
+            if deploy_name == "caddy" && config.edge.is_some() {
+                output::line("🧪 dry-run: would reconcile edge config during caddy deploy");
+            }
+            deployed.push(DeployRecord {
+                service: deploy_name.to_string(),
+                container_id: String::new(),
+                status: "dry-run".to_string(),
+                ports: service
+                    .ports
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                deployed: false,
+                running: false,
+                healthy: None,
+                discoverable: false,
+                detected_by: "dry-run".to_string(),
+            });
+            continue;
+        }
+
         let previous_image = existing_service_image(&runtime_target, deploy_name).await?;
 
         let mut container = deploy_service_with_strategy(
@@ -261,12 +332,17 @@ pub async fn run(
         }
     }
 
-    state.save()?;
+    if dry_run {
+        output::line("🧪 dry-run complete; no build, push, deploy, rollback, or state changes were performed.");
+    } else {
+        state.save()?;
+    }
 
     if output::is_json() {
         let payload = DeployOutput {
             requested: service_name.to_string(),
             order,
+            dry_run,
             deployed,
         };
         output::emit_json(&payload)?;

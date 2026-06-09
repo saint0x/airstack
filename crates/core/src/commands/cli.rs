@@ -126,6 +126,7 @@ async fn services_menu(
                                 None,
                                 false,
                                 false,
+                                false,
                                 true,
                                 None,
                                 "rolling".to_string(),
@@ -190,6 +191,7 @@ async fn services_menu(
                                 remote_build: None,
                                 from: commands::release::ReleaseFrom::Build,
                             },
+                            false,
                         )
                         .await,
                     );

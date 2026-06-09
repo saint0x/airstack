@@ -38,7 +38,7 @@ pub enum ReleaseFrom {
     Push,
 }
 
-pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
+pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<()> {
     let config = AirstackConfig::load(config_path).context("Failed to load configuration")?;
     let mut state = LocalState::load(&config.project.name)?;
     let services = config
@@ -57,6 +57,57 @@ pub async fn run(config_path: &str, args: ReleaseArgs) -> Result<()> {
     let final_image = format!("{}:{}", base_image, tag);
 
     let operation_id = format!("rel-{}-{}", args.service, unix_now());
+    if dry_run {
+        if args.from == ReleaseFrom::Build {
+            if let Some(server_name) = &args.remote_build {
+                let _ = resolve_remote_build_server(&config, server_name)?;
+                output::line(format!(
+                    "🧪 dry-run: would build '{}' on remote server '{}'",
+                    final_image, server_name
+                ));
+                if args.push {
+                    output::line(format!(
+                        "🧪 dry-run: would push '{}' from remote server '{}'",
+                        final_image, server_name
+                    ));
+                }
+            } else {
+                output::line(format!("🧪 dry-run: would build '{}'", final_image));
+                if args.push {
+                    output::line(format!("🧪 dry-run: would push '{}'", final_image));
+                }
+            }
+        } else if args.push {
+            output::line(format!(
+                "🧪 dry-run: would resume push for '{}' from phase '{}'",
+                final_image,
+                format!("{:?}", args.from).to_ascii_lowercase()
+            ));
+        }
+        if args.update_config {
+            output::line(format!(
+                "🧪 dry-run: would update config image for service '{}'",
+                args.service
+            ));
+        }
+        if output::is_json() {
+            output::emit_json(&serde_json::json!({
+                "service": args.service,
+                "image": final_image,
+                "pushed": args.push,
+                "updated_config": args.update_config,
+                "remote_build": args.remote_build,
+                "from": format!("{:?}", args.from).to_ascii_lowercase(),
+                "operation_id": operation_id,
+                "dry_run": true,
+                "phases": ["build", if args.push { "push" } else { "skip-push" }],
+            }))?;
+        } else {
+            output::line("🧪 dry-run complete; no build, push, config, or state changes were performed.");
+        }
+        return Ok(());
+    }
+
     if args.from == ReleaseFrom::Build {
         emit_phase(&operation_id, "build", "start");
         if let Some(server_name) = &args.remote_build {
