@@ -72,10 +72,8 @@ pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()>
     let service_cfg = services
         .get(&args.service)
         .with_context(|| format!("Service '{}' not found", args.service))?;
-    let service_cfg =
-        resolve_service_env(&config.project.name, &args.service, service_cfg).with_context(|| {
-            format!("Failed to resolve service env for '{}'", args.service)
-        })?;
+    let service_cfg = resolve_service_env(&config.project.name, &args.service, service_cfg)
+        .with_context(|| format!("Failed to resolve service env for '{}'", args.service))?;
 
     let base_image = service_cfg
         .image
@@ -84,10 +82,19 @@ pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()>
         .unwrap_or(&service_cfg.image);
     let tag = args.tag.clone().unwrap_or(git_sha()?);
     let final_image = format!("{}:{}", base_image, tag);
+    let remote_build_server =
+        release::default_remote_build_server_name(&config, &service_cfg, None)?;
 
     if dry_run {
         let _ = resolve_target(&config, &service_cfg, args.allow_local_deploy)?;
-        output::line(format!("🧪 dry-run: would build '{}'", final_image));
+        if let Some(server_name) = &remote_build_server {
+            output::line(format!(
+                "🧪 dry-run: would build '{}' on remote server '{}'",
+                final_image, server_name
+            ));
+        } else {
+            output::line(format!("🧪 dry-run: would build '{}'", final_image));
+        }
         if args.push {
             output::line(format!("🧪 dry-run: would push '{}'", final_image));
         }
@@ -128,10 +135,30 @@ pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()>
     }
 
     // Build + push phase
-    release::preflight_local_docker_available()?;
-    run_cmd("docker", &["build", "-t", &final_image, "."])?;
+    if let Some(server_name) = &remote_build_server {
+        let server = release::resolve_remote_build_server(&config, server_name)?;
+        release::run_remote_build(server, server_name, &final_image).await?;
+    } else {
+        release::preflight_local_docker_available()?;
+        run_cmd("docker", &["build", "-t", &final_image, "."])?;
+    }
     if args.push {
-        run_cmd("docker", &["push", &final_image])?;
+        if let Some(server_name) = &remote_build_server {
+            let server = release::resolve_remote_build_server(&config, server_name)?;
+            release::run_remote_push(server, &final_image)
+                .await
+                .map_err(|failure| {
+                    anyhow::anyhow!(
+                        "Remote registry push failed on '{}' for '{}'. registry={} error={}",
+                        server.name,
+                        failure.image,
+                        failure.registry,
+                        failure.last_error
+                    )
+                })?;
+        } else {
+            run_cmd("docker", &["push", &final_image])?;
+        }
     }
 
     // Deploy phase

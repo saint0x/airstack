@@ -574,7 +574,7 @@ async fn main() -> Result<()> {
         Commands::Build { mode, service } => {
             let migration = match (mode.as_deref(), service.as_deref()) {
                 (Some("remote"), Some(svc)) => format!(
-                    "Legacy 'build remote' was replaced by:\n  airstack release {svc} --push --update-config --remote-build <server>\nOr atomic flow:\n  airstack ship {svc} --push --update-config"
+                    "Legacy 'build remote' was replaced by:\n  airstack release {svc} --push --update-config\nOr atomic flow:\n  airstack ship {svc} --push --update-config"
                 ),
                 (_, Some(svc)) => format!(
                     "Legacy 'build' was replaced by:\n  airstack release {svc} --push --update-config\nOr atomic flow:\n  airstack ship {svc} --push --update-config"

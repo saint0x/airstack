@@ -1,9 +1,13 @@
 use crate::output;
-use crate::ssh_utils::{execute_remote_command, resolve_server_public_ip};
+use crate::ssh_utils::{
+    execute_remote_command, execute_remote_shell_command, resolve_identity_path,
+    resolve_server_public_ip,
+};
 use crate::state::{HealthState, LocalState, ServiceState};
-use airstack_config::{AirstackConfig, ServerConfig};
+use airstack_config::{AirstackConfig, ServerConfig, ServiceConfig};
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -23,10 +27,7 @@ pub struct ReleaseArgs {
     pub push: bool,
     #[arg(long, help = "Update service image in config file")]
     pub update_config: bool,
-    #[arg(
-        long,
-        help = "Build/push via remote Docker daemon on this infra server"
-    )]
+    #[arg(long, help = "Override the remote host used for build/push")]
     pub remote_build: Option<String>,
     #[arg(long, value_enum, default_value_t = ReleaseFrom::Build, help = "Start release at this phase (build or push)")]
     pub from: ReleaseFrom,
@@ -57,9 +58,11 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
     let final_image = format!("{}:{}", base_image, tag);
 
     let operation_id = format!("rel-{}-{}", args.service, unix_now());
+    let remote_build_server =
+        default_remote_build_server_name(&config, svc, args.remote_build.as_deref())?;
     if dry_run {
         if args.from == ReleaseFrom::Build {
-            if let Some(server_name) = &args.remote_build {
+            if let Some(server_name) = &remote_build_server {
                 let _ = resolve_remote_build_server(&config, server_name)?;
                 output::line(format!(
                     "🧪 dry-run: would build '{}' on remote server '{}'",
@@ -96,25 +99,24 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
                 "image": final_image,
                 "pushed": args.push,
                 "updated_config": args.update_config,
-                "remote_build": args.remote_build,
+                "remote_build": remote_build_server,
                 "from": format!("{:?}", args.from).to_ascii_lowercase(),
                 "operation_id": operation_id,
                 "dry_run": true,
                 "phases": ["build", if args.push { "push" } else { "skip-push" }],
             }))?;
         } else {
-            output::line("🧪 dry-run complete; no build, push, config, or state changes were performed.");
+            output::line(
+                "🧪 dry-run complete; no build, push, config, or state changes were performed.",
+            );
         }
         return Ok(());
     }
 
     if args.from == ReleaseFrom::Build {
         emit_phase(&operation_id, "build", "start");
-        if let Some(server_name) = &args.remote_build {
+        if let Some(server_name) = &remote_build_server {
             let server = resolve_remote_build_server(&config, server_name)?;
-            if args.push {
-                preflight_remote_push_requirements(server, &final_image).await?;
-            }
             run_remote_build(server, server_name, &final_image).await?;
         } else {
             preflight_local_docker_available()?;
@@ -122,7 +124,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
         }
         emit_phase(&operation_id, "build", "ok");
     } else if args.push {
-        if let Some(server_name) = &args.remote_build {
+        if let Some(server_name) = &remote_build_server {
             let server = resolve_remote_build_server(&config, server_name)?;
             preflight_remote_push_requirements(server, &final_image).await?;
         } else {
@@ -131,7 +133,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
         emit_phase(&operation_id, "build", "skipped");
     }
 
-    if let Some(server_name) = &args.remote_build {
+    if let Some(server_name) = &remote_build_server {
         let server = resolve_remote_build_server(&config, server_name)?;
         if args.push {
             emit_phase(&operation_id, "push", "start");
@@ -171,9 +173,9 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
         update_config_image(config_path, &args.service, &final_image)?;
     }
 
-    let image_origin = if args.remote_build.is_some() && args.push {
+    let image_origin = if remote_build_server.is_some() && args.push {
         "registry-pushed-via-remote"
-    } else if args.remote_build.is_some() {
+    } else if remote_build_server.is_some() {
         "remote-host-local-only"
     } else if args.push {
         "registry-pushed"
@@ -191,7 +193,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
         } else {
             ""
         },
-        args.remote_build
+        remote_build_server
             .as_ref()
             .map(|s| format!(" --remote-build {s}"))
             .unwrap_or_default()
@@ -228,7 +230,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
             "image": final_image,
             "pushed": args.push,
             "updated_config": args.update_config,
-            "remote_build": args.remote_build,
+            "remote_build": remote_build_server,
             "from": format!("{:?}", args.from).to_ascii_lowercase(),
             "operation_id": operation_id,
             "phases": ["build", if args.push { "push" } else { "skip-push" }],
@@ -246,7 +248,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
             operation_id,
             args.service,
             tag,
-            args.remote_build
+            remote_build_server
                 .as_ref()
                 .map(|s| format!(" --remote-build {s}"))
                 .unwrap_or_default()
@@ -254,6 +256,41 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
     }
 
     Ok(())
+}
+
+pub fn default_remote_build_server_name(
+    config: &AirstackConfig,
+    service_cfg: &ServiceConfig,
+    requested: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(name) = requested {
+        return Ok(Some(name.to_string()));
+    }
+
+    if !prefer_remote_build(config) {
+        return Ok(None);
+    }
+
+    let name = service_cfg.target_server.clone().or_else(|| {
+        config
+            .infra
+            .as_ref()
+            .and_then(|infra| infra.servers.first().map(|s| s.name.clone()))
+    });
+
+    name.map(Some).with_context(|| {
+        "Remote build was selected, but no infra server or service target_server was configured"
+    })
+}
+
+pub fn prefer_remote_build(config: &AirstackConfig) -> bool {
+    if let Some(mode) = config.project.deploy_mode.as_deref() {
+        return mode == "remote";
+    }
+    config
+        .infra
+        .as_ref()
+        .is_some_and(|infra| !infra.servers.is_empty())
 }
 
 pub fn resolve_remote_build_server<'a>(
@@ -278,24 +315,45 @@ pub fn resolve_remote_build_server<'a>(
 }
 
 pub async fn run_remote_build(server: &ServerConfig, server_name: &str, image: &str) -> Result<()> {
+    preflight_remote_push_requirements(server, image).await?;
+
+    let archive_path = create_remote_build_archive()?;
+    let archive_str = archive_path.to_string_lossy().to_string();
     let ip = resolve_server_public_ip(server).await?;
-    let ctx = format!("airstack-remote-{}-{}", server_name, unix_now());
-    run_cmd(
-        "docker",
-        &[
-            "context",
-            "create",
-            &ctx,
-            "--docker",
-            &format!("host=ssh://root@{}", ip),
-        ],
-    )?;
-    let build_result = run_cmd("docker", &["--context", &ctx, "build", "-t", image, "."]);
-    let cleanup_result = run_cmd("docker", &["context", "rm", "-f", &ctx]);
-    if let Err(e) = build_result {
-        return Err(e);
+    let remote_root = format!("/tmp/airstack-remote-build-{}-{}", server_name, unix_now());
+    let remote_archive = format!("{remote_root}.tgz");
+
+    let upload_result = scp_local_file(server, &ip, &archive_str, &remote_archive);
+    if let Err(err) = std::fs::remove_file(&archive_path) {
+        output::line(format!(
+            "⚠️ unable to remove local remote-build archive '{}': {}",
+            archive_path.display(),
+            err
+        ));
     }
-    let _ = cleanup_result;
+    upload_result?;
+
+    let script = format!(
+        "set -euo pipefail; cleanup() {{ rm -f {archive}; rm -rf {root}; }}; trap cleanup EXIT; rm -rf {root}; mkdir -p {root}; tar -xzf {archive} -C {root}; if docker info >/dev/null 2>&1; then docker build -t {image} {root}; elif sudo -n docker info >/dev/null 2>&1; then sudo -n docker build -t {image} {root}; else echo 'docker runtime unavailable on remote host' >&2; exit 1; fi",
+        archive = shell_quote(&remote_archive),
+        root = shell_quote(&remote_root),
+        image = shell_quote(image),
+    );
+    let out = execute_remote_shell_command(server, &script).await?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        anyhow::bail!(
+            "Remote build failed on '{}': {}",
+            server.name,
+            if detail.is_empty() {
+                "docker build exited unsuccessfully".to_string()
+            } else {
+                detail
+            }
+        );
+    }
     Ok(())
 }
 
@@ -339,6 +397,35 @@ pub async fn preflight_remote_push_requirements(server: &ServerConfig, image: &s
     Ok(())
 }
 
+fn create_remote_build_archive() -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("Failed to resolve current working directory")?;
+    let archive_path = std::env::temp_dir().join(format!(
+        "airstack-remote-build-{}.tgz",
+        uuid::Uuid::new_v4()
+    ));
+    let archive_str = archive_path.to_string_lossy().to_string();
+    let excludes = [".git", "target", "node_modules", ".fozzy", ".DS_Store"];
+
+    let mut cmd = Command::new("tar");
+    cmd.current_dir(&cwd);
+    for exclude in excludes {
+        cmd.arg(format!("--exclude={exclude}"));
+    }
+    cmd.args(["-czf", &archive_str, "."]);
+
+    let output = cmd
+        .output()
+        .context("Failed to create remote build archive with tar")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to create remote build archive: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(archive_path)
+}
+
 fn emit_phase(operation_id: &str, phase: &str, status: &str) {
     if !output::is_json() {
         output::line(format!(
@@ -373,7 +460,7 @@ pub fn preflight_local_docker_available() -> Result<()> {
         .context("Failed to execute docker info")?;
     if !out.status.success() {
         anyhow::bail!(
-            "Local Docker daemon unavailable. For remote mode, use airstack release <service> --push --remote-build <server> (or airstack deploy <service> --latest-code --push in remote mode to auto-fallback)."
+            "Local Docker daemon unavailable. In remote mode, Airstack now builds on the host automatically. In local-only mode, install/start Docker locally before running release."
         );
     }
     Ok(())
@@ -386,6 +473,36 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
         .with_context(|| format!("Failed to execute {}", cmd))?;
     if !status.success() {
         anyhow::bail!("Command failed: {} {}", cmd, args.join(" "));
+    }
+    Ok(())
+}
+
+fn scp_local_file(server: &ServerConfig, ip: &str, source: &str, remote_path: &str) -> Result<()> {
+    let mut cmd = Command::new("scp");
+    cmd.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+    ]);
+
+    if let Some(identity_path) = resolve_identity_path(&server.ssh_key)? {
+        cmd.args(["-i", &identity_path.to_string_lossy()]);
+    }
+
+    cmd.arg(source);
+    cmd.arg(format!("root@{}:{}", ip, remote_path));
+
+    let status = cmd.status().context("Failed to run scp for remote build")?;
+    if !status.success() {
+        anyhow::bail!(
+            "scp failed uploading remote build archive '{}'",
+            Path::new(source).display()
+        );
     }
     Ok(())
 }
@@ -564,7 +681,14 @@ pub fn update_config_image(config_path: &str, service: &str, image: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::{explicit_registry_host, registry_host_for_login};
+    use super::{
+        default_remote_build_server_name, explicit_registry_host, prefer_remote_build,
+        registry_host_for_login,
+    };
+    use airstack_config::{
+        AirstackConfig, InfraConfig, ProjectConfig, ServerConfig, ServiceConfig,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn explicit_registry_host_requires_host_prefix() {
@@ -593,6 +717,108 @@ mod tests {
         assert_eq!(
             registry_host_for_login("app:abc").as_deref(),
             Some("docker.io")
+        );
+    }
+
+    #[test]
+    fn prefer_remote_build_when_remote_mode_or_infra_exists() {
+        let config = AirstackConfig {
+            project: ProjectConfig {
+                name: "demo".to_string(),
+                description: None,
+                deploy_mode: Some("remote".to_string()),
+            },
+            infra: None,
+            services: None,
+            edge: None,
+            providers: None,
+            scripts: None,
+            hooks: None,
+        };
+        assert!(prefer_remote_build(&config));
+
+        let config2 = AirstackConfig {
+            project: ProjectConfig {
+                name: "demo".to_string(),
+                description: None,
+                deploy_mode: None,
+            },
+            infra: Some(InfraConfig {
+                servers: vec![ServerConfig {
+                    name: "aria".to_string(),
+                    provider: "hetzner".to_string(),
+                    region: "ash".to_string(),
+                    ssh_key: "~/.ssh/id_ed25519.pub".to_string(),
+                    server_type: "cpx21".to_string(),
+                    floating_ip: None,
+                }],
+                firewall: None,
+            }),
+            services: None,
+            edge: None,
+            providers: None,
+            scripts: None,
+            hooks: None,
+        };
+        assert!(prefer_remote_build(&config2));
+    }
+
+    #[test]
+    fn default_remote_build_prefers_service_target_then_first_infra() {
+        let config = AirstackConfig {
+            project: ProjectConfig {
+                name: "demo".to_string(),
+                description: None,
+                deploy_mode: Some("remote".to_string()),
+            },
+            infra: Some(InfraConfig {
+                servers: vec![ServerConfig {
+                    name: "default-server".to_string(),
+                    provider: "hetzner".to_string(),
+                    region: "ash".to_string(),
+                    ssh_key: "~/.ssh/id_ed25519.pub".to_string(),
+                    server_type: "cpx21".to_string(),
+                    floating_ip: None,
+                }],
+                firewall: None,
+            }),
+            services: None,
+            edge: None,
+            providers: None,
+            scripts: None,
+            hooks: None,
+        };
+
+        let svc_targeted = ServiceConfig {
+            image: "ghcr.io/demo/app:latest".to_string(),
+            ports: vec![8080],
+            env: Some(HashMap::new()),
+            volumes: Some(Vec::new()),
+            depends_on: Some(Vec::new()),
+            target_server: Some("target-server".to_string()),
+            healthcheck: None,
+            profile: None,
+        };
+        assert_eq!(
+            default_remote_build_server_name(&config, &svc_targeted, None)
+                .expect("remote build server should resolve"),
+            Some("target-server".to_string())
+        );
+
+        let svc_default = ServiceConfig {
+            image: "ghcr.io/demo/app:latest".to_string(),
+            ports: vec![8080],
+            env: Some(HashMap::new()),
+            volumes: Some(Vec::new()),
+            depends_on: Some(Vec::new()),
+            target_server: None,
+            healthcheck: None,
+            profile: None,
+        };
+        assert_eq!(
+            default_remote_build_server_name(&config, &svc_default, None)
+                .expect("default server should resolve"),
+            Some("default-server".to_string())
         );
     }
 }

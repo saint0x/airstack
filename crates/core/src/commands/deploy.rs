@@ -76,24 +76,13 @@ pub async fn run(
         let base_image = svc.image.split(':').next().unwrap_or(&svc.image);
         let resolved_tag = tag.unwrap_or(git_sha()?);
         let built_image = format!("{}:{}", base_image, resolved_tag);
-        let remote_mode = is_remote_deploy_mode(&config);
-        let local_docker_ok = local_docker_available();
+        let remote_build_server = release::default_remote_build_server_name(&config, svc, None)?;
 
-        if !local_docker_ok && remote_mode {
-            let remote_server = svc
-                .target_server
-                .clone()
-                .or_else(|| {
-                    config
-                        .infra
-                        .as_ref()
-                        .and_then(|i| i.servers.first().map(|s| s.name.clone()))
-                })
-                .context("Remote deploy mode selected but no infra server was found for --latest-code fallback")?;
+        if let Some(remote_server) = remote_build_server {
             if dry_run {
                 output::line(format!(
-                    "🧪 dry-run: would use remote build fallback on '{}' for '{}'",
-                    remote_server, built_image
+                    "🧪 dry-run: would build '{}' on remote server '{}'",
+                    built_image, remote_server
                 ));
                 if push {
                     output::line(format!(
@@ -109,7 +98,7 @@ pub async fn run(
                 }
             } else {
                 output::line(format!(
-                    "ℹ️ local Docker unavailable; using remote build fallback on '{}'",
+                    "ℹ️ using canonical remote build on '{}'",
                     remote_server
                 ));
                 let server = release::resolve_remote_build_server(&config, &remote_server)?;
@@ -192,10 +181,8 @@ pub async fn run(
             service_override.image = image.clone();
             service = &service_override;
         }
-        let resolved_service =
-            resolve_service_env(&config.project.name, deploy_name, service).with_context(|| {
-                format!("Failed to resolve service env for '{}'", deploy_name)
-            })?;
+        let resolved_service = resolve_service_env(&config.project.name, deploy_name, service)
+            .with_context(|| format!("Failed to resolve service env for '{}'", deploy_name))?;
         let service = &resolved_service;
 
         output::line(format!(
@@ -367,21 +354,6 @@ fn deploy_target_matches_build_server(
             .and_then(|infra| infra.servers.first().map(|s| s.name.clone()))
     });
     target.as_deref() == Some(build_server)
-}
-
-fn is_remote_deploy_mode(config: &AirstackConfig) -> bool {
-    if let Some(mode) = config.project.deploy_mode.as_deref() {
-        return mode == "remote";
-    }
-    config.infra.as_ref().is_some_and(|i| !i.servers.is_empty())
-}
-
-fn local_docker_available() -> bool {
-    std::process::Command::new("docker")
-        .arg("info")
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
 }
 
 fn run_cmd(cmd: &str, args: &[&str]) -> Result<()> {
