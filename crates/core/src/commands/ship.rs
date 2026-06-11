@@ -84,6 +84,7 @@ pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()>
     let final_image = format!("{}:{}", base_image, tag);
     let remote_build_server =
         release::default_remote_build_server_name(&config, &service_cfg, None)?;
+    let build_context_root = release::resolve_build_context_root(config_path)?;
 
     if dry_run {
         let _ = resolve_target(&config, &service_cfg, args.allow_local_deploy)?;
@@ -137,7 +138,7 @@ pub async fn run(config_path: &str, args: ShipArgs, dry_run: bool) -> Result<()>
     // Build + push phase
     if let Some(server_name) = &remote_build_server {
         let server = release::resolve_remote_build_server(&config, server_name)?;
-        release::run_remote_build(server, server_name, &final_image).await?;
+        release::run_remote_build(server, server_name, &final_image, &build_context_root).await?;
     } else {
         release::preflight_local_docker_available()?;
         run_cmd("docker", &["build", "-t", &final_image, "."])?;

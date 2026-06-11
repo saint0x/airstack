@@ -77,6 +77,7 @@ pub async fn run(
         let resolved_tag = tag.unwrap_or(git_sha()?);
         let built_image = format!("{}:{}", base_image, resolved_tag);
         let remote_build_server = release::default_remote_build_server_name(&config, svc, None)?;
+        let build_context_root = release::resolve_build_context_root(config_path)?;
 
         if let Some(remote_server) = remote_build_server {
             if dry_run {
@@ -102,7 +103,13 @@ pub async fn run(
                     remote_server
                 ));
                 let server = release::resolve_remote_build_server(&config, &remote_server)?;
-                release::run_remote_build(server, &remote_server, &built_image).await?;
+                release::run_remote_build(
+                    server,
+                    &remote_server,
+                    &built_image,
+                    &build_context_root,
+                )
+                .await?;
 
                 if push {
                     release::preflight_remote_push_requirements(server, &built_image).await?;

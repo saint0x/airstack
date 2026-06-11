@@ -60,6 +60,7 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
     let operation_id = format!("rel-{}-{}", args.service, unix_now());
     let remote_build_server =
         default_remote_build_server_name(&config, svc, args.remote_build.as_deref())?;
+    let build_context_root = resolve_build_context_root(config_path)?;
     if dry_run {
         if args.from == ReleaseFrom::Build {
             if let Some(server_name) = &remote_build_server {
@@ -115,12 +116,12 @@ pub async fn run(config_path: &str, args: ReleaseArgs, dry_run: bool) -> Result<
 
     if args.from == ReleaseFrom::Build {
         emit_phase(&operation_id, "build", "start");
-        if let Some(server_name) = &remote_build_server {
-            let server = resolve_remote_build_server(&config, server_name)?;
-            run_remote_build(server, server_name, &final_image).await?;
-        } else {
-            preflight_local_docker_available()?;
-            run_cmd("docker", &["build", "-t", &final_image, "."])?;
+            if let Some(server_name) = &remote_build_server {
+                let server = resolve_remote_build_server(&config, server_name)?;
+                run_remote_build(server, server_name, &final_image, &build_context_root).await?;
+            } else {
+                preflight_local_docker_available()?;
+                run_cmd("docker", &["build", "-t", &final_image, "."])?;
         }
         emit_phase(&operation_id, "build", "ok");
     } else if args.push {
@@ -314,10 +315,15 @@ pub fn resolve_remote_build_server<'a>(
     Ok(server)
 }
 
-pub async fn run_remote_build(server: &ServerConfig, server_name: &str, image: &str) -> Result<()> {
+pub async fn run_remote_build(
+    server: &ServerConfig,
+    server_name: &str,
+    image: &str,
+    context_root: &Path,
+) -> Result<()> {
     preflight_remote_push_requirements(server, image).await?;
 
-    let archive_path = create_remote_build_archive()?;
+    let archive_path = create_remote_build_archive(context_root)?;
     let archive_str = archive_path.to_string_lossy().to_string();
     let ip = resolve_server_public_ip(server).await?;
     let remote_root = format!("/tmp/airstack-remote-build-{}-{}", server_name, unix_now());
@@ -397,8 +403,25 @@ pub async fn preflight_remote_push_requirements(server: &ServerConfig, image: &s
     Ok(())
 }
 
-fn create_remote_build_archive() -> Result<PathBuf> {
-    let cwd = std::env::current_dir().context("Failed to resolve current working directory")?;
+pub fn resolve_build_context_root(config_path: &str) -> Result<PathBuf> {
+    let cfg_path = Path::new(config_path);
+    let root = if cfg_path.is_dir() {
+        cfg_path.to_path_buf()
+    } else {
+        cfg_path
+            .parent()
+            .map(Path::to_path_buf)
+            .context("Config path has no parent directory for build context")?
+    };
+    root.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve build context root from config path '{}'",
+            config_path
+        )
+    })
+}
+
+fn create_remote_build_archive(context_root: &Path) -> Result<PathBuf> {
     let archive_path = std::env::temp_dir().join(format!(
         "airstack-remote-build-{}.tgz",
         uuid::Uuid::new_v4()
@@ -407,7 +430,8 @@ fn create_remote_build_archive() -> Result<PathBuf> {
     let excludes = [".git", "target", "node_modules", ".fozzy", ".DS_Store"];
 
     let mut cmd = Command::new("tar");
-    cmd.current_dir(&cwd);
+    cmd.current_dir(context_root);
+    cmd.env("COPYFILE_DISABLE", "1");
     for exclude in excludes {
         cmd.arg(format!("--exclude={exclude}"));
     }
@@ -683,12 +707,13 @@ pub fn update_config_image(config_path: &str, service: &str, image: &str) -> Res
 mod tests {
     use super::{
         default_remote_build_server_name, explicit_registry_host, prefer_remote_build,
-        registry_host_for_login,
+        registry_host_for_login, resolve_build_context_root,
     };
     use airstack_config::{
         AirstackConfig, InfraConfig, ProjectConfig, ServerConfig, ServiceConfig,
     };
     use std::collections::HashMap;
+    use std::fs;
 
     #[test]
     fn explicit_registry_host_requires_host_prefix() {
@@ -820,5 +845,20 @@ mod tests {
                 .expect("default server should resolve"),
             Some("default-server".to_string())
         );
+    }
+
+    #[test]
+    fn resolve_build_context_root_uses_config_parent_directory() {
+        let root = std::env::temp_dir().join(format!("airstack-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create temp root");
+        let config_path = root.join("airstack.toml");
+        fs::write(&config_path, "[project]\nname='demo'\n").expect("write config");
+
+        let resolved = resolve_build_context_root(config_path.to_string_lossy().as_ref())
+            .expect("resolve build root");
+        assert_eq!(resolved, root.canonicalize().expect("canonical temp root"));
+
+        let _ = fs::remove_file(&config_path);
+        let _ = fs::remove_dir_all(&root);
     }
 }
